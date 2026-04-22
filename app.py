@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 
 
 st.set_page_config(page_title="Levantamento de notícias sobre preconceitos e discursos de ódio", layout="wide")
@@ -19,8 +20,6 @@ def get_db_url() -> str:
 
     if "SUPABASE_DB_URL" in secrets_dict:
         url = secrets_dict["SUPABASE_DB_URL"]
-        st.sidebar.write("**Fonte da conexão:** st.secrets")
-        st.sidebar.code(url[:80] + ("..." if len(url) > 80 else ""))
         return url
 
     env_url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -29,13 +28,17 @@ def get_db_url() -> str:
         st.sidebar.code(env_url[:80] + ("..." if len(env_url) > 80 else ""))
         return env_url
 
-    st.sidebar.error("SUPABASE_DB_URL não encontrada em st.secrets nem em variável de ambiente.")
+
     raise RuntimeError("SUPABASE_DB_URL não configurada.")
 
 
 @st.cache_resource
 def get_engine():
-    return create_engine(get_db_url(), pool_pre_ping=True)
+    return create_engine(
+        get_db_url(),
+        pool_pre_ping=True,
+        poolclass=NullPool,
+    )
 
 
 @st.cache_data(ttl=60)
@@ -82,6 +85,8 @@ with col_a:
     st.title("🧱 Parede de Discurso Público")
 with col_b:
     if st.button("Atualizar agora"):
+        if "noticia_id_aberta" in st.session_state:
+            st.session_state.noticia_id_aberta = None
         st.cache_data.clear()
         st.rerun()
 
