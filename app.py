@@ -82,7 +82,7 @@ def fechar_noticia():
 
 col_a, col_b = st.columns([5, 1])
 with col_a:
-    st.title("🧱 Parede de Discurso Público")
+    st.title("Levantamento de notícias sobre preconceitos e discursos de ódio")
 with col_b:
     if st.button("Atualizar agora"):
         if "noticia_id_aberta" in st.session_state:
