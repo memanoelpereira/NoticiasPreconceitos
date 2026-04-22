@@ -11,16 +11,12 @@ st.set_page_config(page_title="Levantamento de notícias sobre preconceitos e di
 
 
 def get_db_url() -> str:
-    secrets = st.secrets.to_dict() if hasattr(st, "secrets") else {}
-    if "SUPABASE_DB_URL" in secrets:
-        return secrets["SUPABASE_DB_URL"]
+    if "SUPABASE_DB_URL" in st.secrets:
+        return st.secrets["SUPABASE_DB_URL"]
     env_url = os.getenv("SUPABASE_DB_URL", "").strip()
     if env_url:
         return env_url
-    raise RuntimeError(
-        "SUPABASE_DB_URL não configurada. Defina em st.secrets no Streamlit Cloud "
-        "ou como variável de ambiente local."
-    )
+    raise RuntimeError("SUPABASE_DB_URL não configurada.")
 
 
 @st.cache_resource
