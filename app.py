@@ -11,11 +11,25 @@ st.set_page_config(page_title="Levantamento de notícias sobre preconceitos e di
 
 
 def get_db_url() -> str:
-    if "SUPABASE_DB_URL" in st.secrets:
-        return st.secrets["SUPABASE_DB_URL"]
+    secrets_dict = {}
+    try:
+        secrets_dict = st.secrets.to_dict()
+    except Exception:
+        secrets_dict = {}
+
+    if "SUPABASE_DB_URL" in secrets_dict:
+        url = secrets_dict["SUPABASE_DB_URL"]
+        st.sidebar.write("**Fonte da conexão:** st.secrets")
+        st.sidebar.code(url[:80] + ("..." if len(url) > 80 else ""))
+        return url
+
     env_url = os.getenv("SUPABASE_DB_URL", "").strip()
     if env_url:
+        st.sidebar.write("**Fonte da conexão:** variável de ambiente")
+        st.sidebar.code(env_url[:80] + ("..." if len(env_url) > 80 else ""))
         return env_url
+
+    st.sidebar.error("SUPABASE_DB_URL não encontrada em st.secrets nem em variável de ambiente.")
     raise RuntimeError("SUPABASE_DB_URL não configurada.")
 
 
