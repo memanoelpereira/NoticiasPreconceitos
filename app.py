@@ -133,7 +133,7 @@ def categorizar_publicamente(row) -> str:
         "migrante", "migrantes", "refugiado", "refugiados",
         "migração", "migracao"
     ):
-        return "Xenofobia, migração e refúgio"
+        return "Xenofobia, migração e refugiados"
 
     if tem(
         "indigena", "indígena", "indigenas", "indígenas",
@@ -148,7 +148,7 @@ def categorizar_publicamente(row) -> str:
         "pessoa com deficiencia", "pcd", "autista", "autistas",
         "deficiente", "deficiência", "deficiencia"
     ):
-        return "Capacitismo e deficiência"
+        return "Capacitismos"
 
     if tem(
         "futebol", "torcida", "torcedor", "torcedores", "estadio", "estádio",
@@ -157,7 +157,7 @@ def categorizar_publicamente(row) -> str:
         "teatro", "cinema", "samba", "funk", "rap", "hip hop",
         "cultura popular", "festa popular", "lazer popular"
     ):
-        return "Esporte, cultura e lazer com discriminação"
+        return "Discriminação nos esportes, cultura e lazer"
 
     if tem(
         "justiça", "justica", "tribunal", "stf", "stj",
@@ -165,7 +165,7 @@ def categorizar_publicamente(row) -> str:
         "projeto de lei", "política pública", "politica publica",
         "ações afirmativas", "acoes afirmativas", "lei de cotas", "lei"
     ):
-        return "Direitos, justiça e políticas públicas"
+        return "Direitos humanos, justiça e políticas públicas"
 
     return "Estigma, exclusão e conflitos sociais"
 
@@ -256,16 +256,7 @@ css = f"""
     display: flex;
     justify-content: space-between;
 }}
-.categoria-tag {{
-    font-size: {CSS_FONT_TAG};
-    background: #eef2ff;
-    color: #3730a3;
-    padding: 4px 6px;
-    border-radius: 4px;
-    align-self: flex-start;
-    margin-bottom: 8px;
-    max-width: 100%;
-}}
+
 .titulo-noticia {{
     font-weight: bold;
     font-size: {CSS_FONT_TITULO};
@@ -348,16 +339,17 @@ else:
 
     df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
 
+
     def altura_por_impacto(impacto: int) -> int:
         if impacto >= 12:
-            return 300
+            return 270
         if impacto >= 8:
-            return 260
+            return 235
         if impacto >= 5:
-            return 225
+            return 205
         if impacto >= 3:
-            return 195
-        return 165
+            return 180
+        return 150
 
     df_noticias = df_noticias.sort_values(
         by=["impacto", "data_coleta"],
@@ -370,7 +362,6 @@ else:
         altura = altura_por_impacto(impacto_val)
         cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
         noticia_id = int(row["id"])
-        categoria_publica = row.get("categoria_publica", "—")
 
         with cols[pos % QTD_COLUNAS]:
             st.markdown(
@@ -381,7 +372,6 @@ else:
                             <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%;">{safe_text(row['fonte'])}</span>
                             <span style="color:#ffb020;flex-shrink:0;">🔥 {impacto_val}</span>
                         </div>
-                        <div class="categoria-tag">{safe_text(categoria_publica)}</div>
                         <div class="titulo-noticia">{safe_text(row['titulo'])}</div>
                         <div class="data-tag">{safe_text(row.get('data_coleta_fmt', row['data_coleta']))}</div>
                     </div>
