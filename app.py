@@ -80,6 +80,80 @@ def formatar_data_curta(value, somente_data: bool = False) -> str:
         return str(value)
 
 
+def categorizar_publicamente(row) -> str:
+    titulo = str(row.get("titulo", "") or "").lower()
+    resumo = str(row.get("resumo", "") or "").lower()
+    texto = f"{titulo} {resumo}"
+
+    def tem(*termos):
+        return any(t in texto for t in termos)
+
+    if tem(
+        "racismo", "racista", "injuria racial", "injúria racial",
+        "ofensa racista", "discriminacao racial", "discriminação racial",
+        "negro", "negra", "pretos", "pretas", "populacao negra", "população negra"
+    ):
+        return "Racismo e discriminação racial"
+
+    if tem(
+        "misoginia", "misóginia", "machismo", "violencia contra a mulher",
+        "violência contra a mulher", "violencia contra mulheres",
+        "violência contra mulheres", "feminicidio", "feminicídio", "sexismo"
+    ):
+        return "Gênero, misoginia e violência contra mulheres"
+
+    if tem(
+        "homofobia", "transfobia", "lgbtfobia", "lgbt", "lgbtqia",
+        "travesti", "travestis", "gay", "gays", "lésbica", "lesbica",
+        "bissexual", "não-binário", "nao-binario", "mulher trans", "homem trans"
+    ):
+        return "LGBTQIA+ e LGBTfobia"
+
+    if tem(
+        "intolerancia religiosa", "intolerância religiosa", "terreiro",
+        "candomble", "candomblé", "umbanda", "templo", "mesquita",
+        "sinagoga", "religiao", "religião", "ataque a terreiro"
+    ):
+        return "Intolerância religiosa"
+
+    if tem(
+        "xenofobia", "xenófobia", "imigrante", "imigrantes",
+        "migrante", "migrantes", "refugiado", "refugiados", "migração", "migracao"
+    ):
+        return "Xenofobia, migração e refúgio"
+
+    if tem(
+        "indigena", "indígena", "indigenas", "indígenas",
+        "quilombola", "quilombolas", "povos originarios", "povos originários",
+        "terras indigenas", "terras indígenas", "demarcacao", "demarcação",
+        "comunidade tradicional", "comunidades tradicionais"
+    ):
+        return "Povos indígenas, quilombolas e comunidades tradicionais"
+
+    if tem(
+        "capacitismo", "capacitista", "pessoa com deficiencia",
+        "pessoa com deficiência", "pcd", "autista", "autistas", "deficiente"
+    ):
+        return "Capacitismo e deficiência"
+
+    if tem(
+        "futebol", "torcida", "torcedor", "torcedores", "estadio", "estádio",
+        "jogador", "jogadora", "clube", "show", "espetaculo", "espetáculo",
+        "musica", "música", "teatro", "cinema", "samba", "funk", "rap"
+    ):
+        return "Esporte, cultura e lazer com discriminação"
+
+    if tem(
+        "cotas", "acoes afirmativas", "ações afirmativas", "stf", "justica",
+        "justiça", "tribunal", "decisao judicial", "decisão judicial",
+        "direitos humanos", "politica publica", "política pública",
+        "projeto de lei", "lei", "ministerio publico", "ministério público"
+    ):
+        return "Direitos, justiça e políticas públicas"
+
+    return "Estigma, exclusão e conflitos sociais"
+
+
 if "noticia_id_aberta" not in st.session_state:
     st.session_state.noticia_id_aberta = None
 
@@ -103,6 +177,7 @@ with col_b:
         st.rerun()
 
 df_noticias, df_entidades, erro_db = carregar_dados()
+df_noticias["categoria_publica"] = df_noticias.apply(categorizar_publicamente, axis=1)
 
 if erro_db:
     st.error(f"Erro ao conectar ao Supabase: {erro_db}")
@@ -585,6 +660,9 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             st.markdown(f'<div class="overlay-title">{safe_text(row["titulo"])}</div>', unsafe_allow_html=True)
 
             badges = []
+            if "categoria_publica" in row.index and pd.notna(row["categoria_publica"]):
+                badges.append(f'<span class="overlay-badge">{safe_text(row["categoria_publica"])}</span>')
+
             if "classificacao" in row.index and pd.notna(row["classificacao"]):
                 badges.append(f'<span class="overlay-badge">{safe_text(row["classificacao"])}</span>')
             if "criterio_filtro" in row.index and pd.notna(row["criterio_filtro"]):
