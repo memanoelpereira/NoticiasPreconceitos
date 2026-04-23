@@ -431,6 +431,7 @@ def plotar_alertas_adaptativos(df_alerta: pd.DataFrame, meta: dict):
         hovermode="x unified"
     )
     fig.update_xaxes(type="category", tickangle=-45)
+    fig.update_yaxes(dtick=1, tickformat="d")
     return fig
 
 
@@ -480,6 +481,8 @@ def plotar_alertas_adaptativos_categoria(df_alerta: pd.DataFrame, meta: dict, ti
 
     if ymax is not None and ymax > 0:
         fig.update_yaxes(range=[0, ymax])
+
+    fig.update_yaxes(dtick=1, tickformat="d")
 
     return fig
 
@@ -1398,6 +1401,7 @@ else:
                         hovermode="x unified"
                     )
                     fig_tempo.update_xaxes(type="category", tickangle=-45)
+                    fig_tempo.update_yaxes(dtick=1, tickformat="d")
 
                     st.plotly_chart(
                         fig_tempo,
