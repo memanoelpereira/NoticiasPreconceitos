@@ -956,7 +956,7 @@ else:
                 [x for x in df_noticias["categoria_publica"].dropna().astype(str).unique().tolist() if x.strip()]
             )
             filtro_categorias = st.multiselect(
-                "Categorias públicas",
+                "Categorias",
                 options=categorias_disponiveis,
                 default=[],
                 key="filtro_categorias_cards",
@@ -1100,7 +1100,7 @@ else:
             with col_ctrl2:
                 modo_linha = st.selectbox(
                     "Modo",
-                    options=["Linha única", "Por categoria pública", "Por portal", "Alertas adaptativos", "Alertas por categoria pública"],
+                    options=["Linha única", "Por categorias", "Por portal", "Alertas adaptativos", "Alertas por categorias"],
                     index=0,
                     key="timeline_modo"
                 )
@@ -1172,9 +1172,9 @@ else:
                                     hide_index=True
                                 )
 
-                elif modo_linha == "Alertas por categoria pública":
+                elif modo_linha == "Alertas por categoris":
                     if granularidade != "Diária":
-                        st.info("Os alertas por categoria pública estão habilitados apenas para a granularidade diária.")
+                        st.info("Os alertas por categoria estão habilitados apenas para a granularidade diária.")
                     else:
                         categorias_disp = sorted(
                             [c for c in df_tempo["categoria_publica"].dropna().astype(str).unique().tolist() if c.strip()]
@@ -1185,11 +1185,11 @@ else:
                             options=categorias_disp,
                             default=categorias_disp[:3] if len(categorias_disp) >= 3 else categorias_disp,
                             key="categorias_alerta_timeline",
-                            placeholder="Selecione categorias públicas"
+                            placeholder="Selecione categorias"
                         )
 
                         if not categorias_sel:
-                            st.info("Selecione ao menos uma categoria pública.")
+                            st.info("Selecione ao menos uma categorias.")
                         else:
                             resultados = []
                             ymax_global = 0.0
@@ -1470,7 +1470,7 @@ else:
             stats_cat,
             x="Categoria pública",
             y="Quantidade",
-            title="Distribuição das notícias por categoria pública"
+            title="Distribuição das notícias por categorias"
         )
         fig_cat.update_layout(xaxis_tickangle=-35)
         st.plotly_chart(
