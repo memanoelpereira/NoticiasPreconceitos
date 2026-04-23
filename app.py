@@ -538,23 +538,26 @@ css = """
 }
 .overlay-badge {
     display: inline-block;
-    padding: 4px 8px;
+    padding: 5px 10px;
     border-radius: 999px;
     background: #eef2ff;
     color: #3730a3;
-    font-size: 0.8rem;
-    margin-right: 6px;
-    margin-bottom: 6px;
+    font-size: 0.79rem;
+    font-weight: 600;
+    margin-right: 7px;
+    margin-bottom: 7px;
+    border: 1px solid #dbe4ff;
 }
 .overlay-badge-tecnica {
     display: inline-block;
-    padding: 4px 8px;
+    padding: 5px 10px;
     border-radius: 999px;
-    background: #f3f4f6;
-    color: #4b5563;
-    font-size: 0.8rem;
-    margin-right: 6px;
-    margin-bottom: 6px;
+    background: #f8fafc;
+    color: #475569;
+    font-size: 0.78rem;
+    margin-right: 7px;
+    margin-bottom: 7px;
+    border: 1px solid #e2e8f0;
 }
 div[data-testid="stButton"] > button.tile-open {
     width: 100%;
@@ -644,24 +647,65 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             """
             <style>
             .painel-foco {
-                background: #ffffff;
-                border: 1px solid #dbe3ee;
-                border-radius: 18px;
-                padding: 22px 24px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.10);
-                margin: 12px 0 18px 0;
+                background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+                border: 1px solid #d7e2ef;
+                border-radius: 20px;
+                padding: 26px 28px 24px 28px;
+                box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14);
+                margin: 14px 0 20px 0;
+                position: relative;
+                overflow: hidden;
             }
+
+            .painel-foco::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 6px;
+                background: linear-gradient(90deg, #2563eb 0%, #7c3aed 100%);
+            }
+
             .painel-foco-meta {
-                color: #4b5563;
-                font-size: 0.96rem;
+                color: #6b7280;
+                font-size: 0.92rem;
+                letter-spacing: 0.01em;
+                margin-bottom: 12px;
+            }
+
+            .painel-foco-titulo {
+                color: #0f172a;
+                font-size: 1.62rem;
+                line-height: 1.32;
+                font-weight: 750;
+                margin-bottom: 16px;
+            }
+
+            .painel-foco-subsecao {
+                color: #111827;
+                font-size: 1.02rem;
+                font-weight: 700;
+                margin-top: 18px;
                 margin-bottom: 10px;
             }
-            .painel-foco-titulo {
-                color: #111827;
-                font-size: 1.5rem;
-                line-height: 1.35;
-                font-weight: 700;
-                margin-bottom: 14px;
+
+            .painel-foco-corpo {
+                color: #1f2937;
+                font-size: 1rem;
+                line-height: 1.72;
+            }
+
+            .painel-foco-acoes {
+                position: sticky;
+                top: 0.5rem;
+            }
+
+            .painel-foco-nota {
+                color: #6b7280;
+                font-size: 0.84rem;
+                margin-top: 8px;
+                text-align: right;
             }
             </style>
             """,
@@ -675,11 +719,14 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
         with box1:
             st.markdown('<div class="painel-foco">', unsafe_allow_html=True)
             st.markdown(
-                f'<div class="painel-foco-meta">{safe_text(row_topo["fonte"])} · {safe_text(formatar_data_curta(row_topo["data_coleta"]))}</div>',
-                unsafe_allow_html=True
-            )
-            st.markdown(
-                f'<div class="painel-foco-titulo">{safe_text(row_topo["titulo"])}</div>',
+                f"""
+                <div class="painel-foco-meta">
+                    {safe_text(row_topo["fonte"])} · {safe_text(formatar_data_curta(row_topo["data_coleta"]))}
+                </div>
+                <div class="painel-foco-titulo">
+                    {safe_text(row_topo["titulo"])}
+                </div>
+                """,
                 unsafe_allow_html=True
             )
 
@@ -715,14 +762,24 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             if "url_fonte" in row_topo.index and pd.notna(row_topo["url_fonte"]):
                 url_fonte = str(row_topo["url_fonte"]).strip()
 
-            st.subheader("Texto da notícia")
+            st.markdown('<div class="painel-foco-subsecao">Texto da notícia</div>', unsafe_allow_html=True)
+
             if texto_completo:
-                st.markdown(texto_completo.replace("\n", "\n\n"))
+                texto_html = safe_text(texto_completo).replace("\n", "<br><br>")
+                st.markdown(
+                    f'<div class="painel-foco-corpo">{texto_html}</div>',
+                    unsafe_allow_html=True
+                )
             elif resumo:
-                st.markdown(resumo)
+                resumo_html = safe_text(resumo).replace("\n", "<br><br>")
+                st.markdown(
+                    f'<div class="painel-foco-corpo">{resumo_html}</div>',
+                    unsafe_allow_html=True
+                )
                 st.info("O banco tem apenas resumo para este item. O texto completo não foi capturado nesta coleta.")
             else:
-                st.info("Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
+                st.info(
+                    "Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
 
             if url_fonte:
                 st.link_button("Abrir fonte original", url_fonte)
@@ -759,10 +816,12 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             st.markdown("</div>", unsafe_allow_html=True)
 
         with box2:
-            st.write("")
+            st.markdown('<div class="painel-foco-acoes">', unsafe_allow_html=True)
             if st.button("Fechar", key=f"fechar_painel_topo_{int(row_topo['id'])}", use_container_width=True):
                 fechar_noticia()
                 st.rerun()
+            st.markdown('<div class="painel-foco-nota">Painel em foco</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown(
             """
