@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
+import re
 
 
 FUSO_BRASIL = "America/Sao_Paulo"
@@ -120,6 +121,22 @@ def formatar_data_curta(value, somente_data: bool = False) -> str:
     except Exception:
         return str(value)
 
+def texto_para_html_paragrafos(texto: str) -> str:
+    if not texto:
+        return ""
+
+    texto_limpo = str(texto).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # divide em blocos/parágrafos por uma ou mais linhas em branco
+    paragrafos = re.split(r"\n\s*\n+", texto_limpo)
+
+    paragrafos_html = []
+    for p in paragrafos:
+        p_limpo = safe_text(p.strip()).replace("\n", " ")
+        if p_limpo:
+            paragrafos_html.append(f"<p>{p_limpo}</p>")
+
+    return "".join(paragrafos_html)
 
 def categorizar_publicamente(row) -> str:
     titulo = str(row.get("titulo", "") or "").lower()
@@ -693,8 +710,15 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             .painel-foco-corpo {
                 color: #1f2937;
                 font-size: 1rem;
-                line-height: 1.72;
+                line-height: 1.68;
             }
+            .painel-foco-corpo p {
+                margin: 0 0 0.75rem 0;
+            }
+
+.painel-foco-corpo p:last-child {
+    margin-bottom: 0;
+}
 
             .painel-foco-acoes {
                 position: sticky;
@@ -765,13 +789,13 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             st.markdown('<div class="painel-foco-subsecao">Texto da notícia</div>', unsafe_allow_html=True)
 
             if texto_completo:
-                texto_html = safe_text(texto_completo).replace("\n", "<br><br>")
+                texto_html = texto_para_html_paragrafos(texto_completo)
                 st.markdown(
                     f'<div class="painel-foco-corpo">{texto_html}</div>',
                     unsafe_allow_html=True
                 )
             elif resumo:
-                resumo_html = safe_text(resumo).replace("\n", "<br><br>")
+                resumo_html = texto_para_html_paragrafos(resumo)
                 st.markdown(
                     f'<div class="painel-foco-corpo">{resumo_html}</div>',
                     unsafe_allow_html=True
