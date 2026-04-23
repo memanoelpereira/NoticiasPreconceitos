@@ -1280,6 +1280,92 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 st.markdown(resumo)
                 st.info("O banco tem apenas resumo para este item. O texto completo não foi capturado nesta coleta.")
             else:
+                st.info("if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
+
+            if url_fonte:
+                st.link_button("Abrir fonte original", url_fonte)
+
+            with st.expander("Mostrar metadados"):
+                meta_cols = [
+                    "id", "fonte", "data_coleta", "categoria_publica",
+                    "classificacao", "criterio_filtro", "score_relevancia",
+                    "url_fonte", "resumo"
+                ]
+                meta = {}
+                for col in meta_cols:
+                    if col in row.index:
+                        value = row[col]
+                        iif st.session_state.noticia_id_aberta is not None and not df_noticias.empty:if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
+    selecionada = df_noticias[df_noticias["id"] == st.session_state.noticia_id_aberta]
+    entidades_rel = pd.DataFrame()
+
+    if not df_entidades.empty:
+        entidades_rel = df_entidades[
+            df_entidades["noticia_id"] == st.session_state.noticia_id_aberta
+        ].copy()
+
+    if not selecionada.empty:
+        row = selecionada.iloc[0]
+
+        @st.dialog("Notícia", width="large")
+        def modal_noticia():
+            topo_esq, topo_dir = st.columns([6, 1])
+
+            with topo_esq:
+                st.markdown(
+                    f'<div class="overlay-meta">{safe_text(row["fonte"])} · {safe_text(formatar_data_curta(row["data_coleta"]))}</div>',
+                    unsafe_allow_html=True
+                )
+
+            with topo_dir:
+                if st.button("Fechar", key=f"fechar_modal_{int(row['id'])}"):
+                    fechar_noticia()
+                    st.rerun()
+
+            st.markdown(
+                f'<div class="overlay-title">{safe_text(row["titulo"])}</div>',
+                unsafe_allow_html=True
+            )
+
+            badges = []
+            if "categoria_publica" in row.index and pd.notna(row["categoria_publica"]):
+                badges.append(f'<span class="overlay-badge">{safe_text(row["categoria_publica"])}</span>')
+
+            if "classificacao" in row.index and pd.notna(row["classificacao"]):
+                badges.append(f'<span class="overlay-badge-tecnica">triagem: {safe_text(row["classificacao"])}</span>')
+
+            if "criterio_filtro" in row.index and pd.notna(row["criterio_filtro"]):
+                badges.append(f'<span class="overlay-badge-tecnica">critério: {safe_text(row["criterio_filtro"])}</span>')
+
+            if "score_relevancia" in row.index and pd.notna(row["score_relevancia"]):
+                try:
+                    badges.append(f'<span class="overlay-badge-tecnica">score {float(row["score_relevancia"]):.3f}</span>')
+                except Exception:
+                    pass
+
+            if "impacto" in row.index and pd.notna(row["impacto"]):
+                badges.append(f'<span class="overlay-badge-tecnica">impacto {int(row["impacto"])}</span>')
+
+            st.markdown("".join(badges), unsafe_allow_html=True)
+
+            texto_completo = None
+            resumo = None
+            url_fonte = None
+
+            if "texto_completo" in row.index and pd.notna(row["texto_completo"]):
+                texto_completo = str(row["texto_completo"]).strip()
+            if "resumo" in row.index and pd.notna(row["resumo"]):
+                resumo = str(row["resumo"]).strip()
+            if "url_fonte" in row.index and pd.notna(row["url_fonte"]):
+                url_fonte = str(row["url_fonte"]).strip()
+
+            st.subheader("Texto da notícia")
+            if texto_completo:
+                st.markdown(texto_completo.replace("\n", "\n\n"))
+            elif resumo:
+                st.markdown(resumo)
+                st.info("O banco tem apenas resumo para este item. O texto completo não foi capturado nesta coleta.")
+            else:
                 st.info("Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
 
             if url_fonte:
@@ -1313,5 +1399,9 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                     )
                 else:
                     st.write("Nenhuma entidade extraída para este item.")
+
+            if st.button("Fechar acompanhamento", key=f"fechar_rodape_{int(row['id'])}"):
+                fechar_noticia()
+                st.rerun()
 
         modal_noticia()
