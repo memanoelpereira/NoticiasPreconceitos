@@ -625,6 +625,157 @@ m2.metric("Total no banco", total_banco)
 m3.metric("Entidades", total_entidades)
 m4.metric("Última coleta (Brasil)", data_mais_recente)
 
+# =========================
+# Painel de acompanhamento no topo
+# =========================
+if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
+    selecionada_topo = df_noticias[df_noticias["id"] == st.session_state.noticia_id_aberta]
+    entidades_rel_topo = pd.DataFrame()
+
+    if not df_entidades.empty:
+        entidades_rel_topo = df_entidades[
+            df_entidades["noticia_id"] == st.session_state.noticia_id_aberta
+        ].copy()
+
+    if not selecionada_topo.empty:
+        row_topo = selecionada_topo.iloc[0]
+
+        st.markdown(
+            """
+            <style>
+            .painel-foco {
+                background: #ffffff;
+                border: 1px solid #dbe3ee;
+                border-radius: 18px;
+                padding: 22px 24px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.10);
+                margin: 12px 0 18px 0;
+            }
+            .painel-foco-meta {
+                color: #4b5563;
+                font-size: 0.96rem;
+                margin-bottom: 10px;
+            }
+            .painel-foco-titulo {
+                color: #111827;
+                font-size: 1.5rem;
+                line-height: 1.35;
+                font-weight: 700;
+                margin-bottom: 14px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.markdown('<div id="painel-noticia-topo"></div>', unsafe_allow_html=True)
+
+        box1, box2 = st.columns([7, 1.2], vertical_alignment="top")
+
+        with box1:
+            st.markdown('<div class="painel-foco">', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="painel-foco-meta">{safe_text(row_topo["fonte"])} · {safe_text(formatar_data_curta(row_topo["data_coleta"]))}</div>',
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                f'<div class="painel-foco-titulo">{safe_text(row_topo["titulo"])}</div>',
+                unsafe_allow_html=True
+            )
+
+            badges = []
+            if "categoria_publica" in row_topo.index and pd.notna(row_topo["categoria_publica"]):
+                badges.append(f'<span class="overlay-badge">{safe_text(row_topo["categoria_publica"])}</span>')
+
+            if "classificacao" in row_topo.index and pd.notna(row_topo["classificacao"]):
+                badges.append(f'<span class="overlay-badge-tecnica">triagem: {safe_text(row_topo["classificacao"])}</span>')
+
+            if "criterio_filtro" in row_topo.index and pd.notna(row_topo["criterio_filtro"]):
+                badges.append(f'<span class="overlay-badge-tecnica">critério: {safe_text(row_topo["criterio_filtro"])}</span>')
+
+            if "score_relevancia" in row_topo.index and pd.notna(row_topo["score_relevancia"]):
+                try:
+                    badges.append(f'<span class="overlay-badge-tecnica">score {float(row_topo["score_relevancia"]):.3f}</span>')
+                except Exception:
+                    pass
+
+            if "impacto" in row_topo.index and pd.notna(row_topo["impacto"]):
+                badges.append(f'<span class="overlay-badge-tecnica">impacto {int(row_topo["impacto"])}</span>')
+
+            st.markdown("".join(badges), unsafe_allow_html=True)
+
+            texto_completo = None
+            resumo = None
+            url_fonte = None
+
+            if "texto_completo" in row_topo.index and pd.notna(row_topo["texto_completo"]):
+                texto_completo = str(row_topo["texto_completo"]).strip()
+            if "resumo" in row_topo.index and pd.notna(row_topo["resumo"]):
+                resumo = str(row_topo["resumo"]).strip()
+            if "url_fonte" in row_topo.index and pd.notna(row_topo["url_fonte"]):
+                url_fonte = str(row_topo["url_fonte"]).strip()
+
+            st.subheader("Texto da notícia")
+            if texto_completo:
+                st.markdown(texto_completo.replace("\n", "\n\n"))
+            elif resumo:
+                st.markdown(resumo)
+                st.info("O banco tem apenas resumo para este item. O texto completo não foi capturado nesta coleta.")
+            else:
+                st.info("Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
+
+            if url_fonte:
+                st.link_button("Abrir fonte original", url_fonte)
+
+            with st.expander("Mostrar metadados"):
+                meta_cols = [
+                    "id", "fonte", "data_coleta", "categoria_publica",
+                    "classificacao", "criterio_filtro", "score_relevancia",
+                    "url_fonte", "resumo"
+                ]
+                meta = {}
+                for col in meta_cols:
+                    if col in row_topo.index:
+                        value = row_topo[col]
+                        if col == "data_coleta" and not pd.isna(value):
+                            meta[col] = formatar_data_curta(value)
+                        else:
+                            meta[col] = "—" if pd.isna(value) else value
+                st.json(meta)
+
+                st.markdown("**Entidades relacionadas**")
+                if not entidades_rel_topo.empty:
+                    entidades_rel_ordenadas = entidades_rel_topo.sort_values(by="tipo")
+                    st.dataframe(
+                        entidades_rel_ordenadas[["texto", "tipo"]].rename(
+                            columns={"texto": "Entidade", "tipo": "Tipo"}
+                        ),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.write("Nenhuma entidade extraída para este item.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with box2:
+            st.write("")
+            if st.button("Fechar", key=f"fechar_painel_topo_{int(row_topo['id'])}", use_container_width=True):
+                fechar_noticia()
+                st.rerun()
+
+        st.markdown(
+            """
+            <script>
+            const el = window.parent.document.getElementById("painel-noticia-topo");
+            if (el) {
+                el.scrollIntoView({behavior: "smooth", block: "start"});
+            }
+            </script>
+            """,
+            unsafe_allow_html=True
+        )
+
 if df_noticias.empty:
     st.warning("Nenhuma notícia encontrada para o recorte atual.")
 else:
@@ -1219,223 +1370,3 @@ else:
         else:
             st.info("Ainda não há entidades extraídas para exibir.")
 
-if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
-    selecionada = df_noticias[df_noticias["id"] == st.session_state.noticia_id_aberta]
-    entidades_rel = pd.DataFrame()
-
-    if not df_entidades.empty:
-        entidades_rel = df_entidades[
-            df_entidades["noticia_id"] == st.session_state.noticia_id_aberta
-        ].copy()
-
-    if not selecionada.empty:
-        row = selecionada.iloc[0]
-
-        st.markdown(
-            """
-            <style>
-            .overlay-backdrop {
-                position: fixed;
-                inset: 0;
-                background: rgba(17, 24, 39, 0.52);
-                z-index: 999990;
-                pointer-events: none;
-            }
-
-            .overlay-anchor {
-                position: relative;
-                z-index: 999991;
-            }
-
-            .overlay-shell {
-                max-width: 1080px;
-                margin: 0 auto 24px auto;
-                background: #ffffff;
-                border-radius: 18px;
-                box-shadow: 0 18px 50px rgba(0,0,0,0.28);
-                border: 1px solid #e5e7eb;
-                overflow: hidden;
-            }
-
-            .overlay-shell-inner {
-                padding: 22px 24px 24px 24px;
-            }
-
-            .overlay-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: flex-start;
-                gap: 18px;
-                margin-bottom: 8px;
-            }
-
-            .overlay-header-left {
-                min-width: 0;
-                flex: 1;
-            }
-
-            .overlay-meta-fake {
-                color: #4b5563;
-                font-size: 0.95rem;
-                margin-bottom: 10px;
-            }
-
-            .overlay-title-fake {
-                color: #111827;
-                font-size: 1.45rem;
-                line-height: 1.35;
-                font-weight: 700;
-                margin-bottom: 14px;
-            }
-
-            .overlay-body-wrap {
-                max-height: 72vh;
-                overflow-y: auto;
-                padding-right: 4px;
-            }
-
-            .overlay-body-wrap::-webkit-scrollbar {
-                width: 10px;
-            }
-
-            .overlay-body-wrap::-webkit-scrollbar-thumb {
-                background: #c7cdd6;
-                border-radius: 999px;
-            }
-
-            .overlay-body-wrap::-webkit-scrollbar-track {
-                background: #eef2f7;
-                border-radius: 999px;
-            }
-
-            .overlay-floating-note {
-                color: #6b7280;
-                font-size: 0.84rem;
-                margin-bottom: 8px;
-            }
-
-            .overlay-close-area {
-                min-width: 120px;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
-        st.markdown('<div class="overlay-backdrop"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="overlay-anchor" id="overlay-noticia-anchor">', unsafe_allow_html=True)
-
-        container_overlay = st.container(border=False)
-        with container_overlay:
-            st.markdown('<div class="overlay-shell"><div class="overlay-shell-inner">', unsafe_allow_html=True)
-
-            topo_esq, topo_dir = st.columns([8, 1.3], vertical_alignment="top")
-
-            with topo_esq:
-                st.markdown(
-                    f"""
-                    <div class="overlay-meta-fake">
-                        {safe_text(row["fonte"])} · {safe_text(formatar_data_curta(row["data_coleta"]))}
-                    </div>
-                    <div class="overlay-title-fake">
-                        {safe_text(row["titulo"])}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-            with topo_dir:
-                st.markdown('<div class="overlay-close-area">', unsafe_allow_html=True)
-                if st.button("Fechar", key=f"fechar_overlay_{int(row['id'])}", use_container_width=True):
-                    fechar_noticia()
-                    st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            badges = []
-            if "categoria_publica" in row.index and pd.notna(row["categoria_publica"]):
-                badges.append(f'<span class="overlay-badge">{safe_text(row["categoria_publica"])}</span>')
-
-            if "classificacao" in row.index and pd.notna(row["classificacao"]):
-                badges.append(f'<span class="overlay-badge-tecnica">triagem: {safe_text(row["classificacao"])}</span>')
-
-            if "criterio_filtro" in row.index and pd.notna(row["criterio_filtro"]):
-                badges.append(f'<span class="overlay-badge-tecnica">critério: {safe_text(row["criterio_filtro"])}</span>')
-
-            if "score_relevancia" in row.index and pd.notna(row["score_relevancia"]):
-                try:
-                    badges.append(f'<span class="overlay-badge-tecnica">score {float(row["score_relevancia"]):.3f}</span>')
-                except Exception:
-                    pass
-
-            if "impacto" in row.index and pd.notna(row["impacto"]):
-                badges.append(f'<span class="overlay-badge-tecnica">impacto {int(row["impacto"])}</span>')
-
-            st.markdown("".join(badges), unsafe_allow_html=True)
-            st.markdown('<div class="overlay-body-wrap">', unsafe_allow_html=True)
-
-            texto_completo = None
-            resumo = None
-            url_fonte = None
-
-            if "texto_completo" in row.index and pd.notna(row["texto_completo"]):
-                texto_completo = str(row["texto_completo"]).strip()
-            if "resumo" in row.index and pd.notna(row["resumo"]):
-                resumo = str(row["resumo"]).strip()
-            if "url_fonte" in row.index and pd.notna(row["url_fonte"]):
-                url_fonte = str(row["url_fonte"]).strip()
-
-            st.subheader("Texto da notícia")
-            if texto_completo:
-                st.markdown(texto_completo.replace("\n", "\n\n"))
-            elif resumo:
-                st.markdown(resumo)
-                st.info("O banco tem apenas resumo para este item. O texto completo não foi capturado nesta coleta.")
-            else:
-                st.info("Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
-
-            if url_fonte:
-                st.link_button("Abrir fonte original", url_fonte)
-
-            with st.expander("Mostrar metadados"):
-                meta_cols = [
-                    "id", "fonte", "data_coleta", "categoria_publica",
-                    "classificacao", "criterio_filtro", "score_relevancia",
-                    "url_fonte", "resumo"
-                ]
-                meta = {}
-                for col in meta_cols:
-                    if col in row.index:
-                        value = row[col]
-                        if col == "data_coleta" and not pd.isna(value):
-                            meta[col] = formatar_data_curta(value)
-                        else:
-                            meta[col] = "—" if pd.isna(value) else value
-                st.json(meta)
-
-                st.markdown("**Entidades relacionadas**")
-                if not entidades_rel.empty:
-                    entidades_rel_ordenadas = entidades_rel.sort_values(by="tipo")
-                    st.dataframe(
-                        entidades_rel_ordenadas[["texto", "tipo"]].rename(
-                            columns={"texto": "Entidade", "tipo": "Tipo"}
-                        ),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.write("Nenhuma entidade extraída para este item.")
-
-            st.markdown('</div></div></div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown(
-            """
-            <script>
-            const anchor = window.parent.document.getElementById("overlay-noticia-anchor");
-            if (anchor) {
-                anchor.scrollIntoView({behavior: "smooth", block: "start"});
-            }
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
