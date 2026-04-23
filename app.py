@@ -201,6 +201,32 @@ def categorizar_publicamente(row) -> str:
     return "Estigma, exclusão e conflitos sociais"
 
 
+def aplicar_busca_textual(df: pd.DataFrame, consulta: str) -> pd.DataFrame:
+    consulta = (consulta or "").strip().lower()
+    if not consulta:
+        return df
+
+    termos = [t for t in consulta.split() if t.strip()]
+    if not termos:
+        return df
+
+    df_busca = df.copy()
+    df_busca["_texto_busca"] = (
+        df_busca["titulo"].fillna("").astype(str) + " "
+        + df_busca["resumo"].fillna("").astype(str) + " "
+        + df_busca["texto_completo"].fillna("").astype(str) + " "
+        + df_busca["fonte"].fillna("").astype(str) + " "
+        + df_busca["categoria_publica"].fillna("").astype(str)
+    ).str.lower()
+
+    mascara = pd.Series(True, index=df_busca.index)
+    for termo in termos:
+        mascara = mascara & df_busca["_texto_busca"].str.contains(termo, regex=False, na=False)
+
+    df_busca = df_busca[mascara].drop(columns=["_texto_busca"])
+    return df_busca
+
+
 if "noticia_id_aberta" not in st.session_state:
     st.session_state.noticia_id_aberta = None
 
@@ -380,7 +406,7 @@ else:
         df_noticias["data_filtro"] = df_noticias["data_filtro"].dt.tz_convert(FUSO_BRASIL)
 
     with st.expander("🔎 Filtros de exibição", expanded=True):
-        f1, f2, f3, f4 = st.columns([1.1, 1.2, 0.8, 1.2])
+        f1, f2, f3, f4, f5 = st.columns([1.1, 1.4, 1.2, 0.8, 1.2])
 
         total_registros = int(len(df_noticias))
 
@@ -399,6 +425,14 @@ else:
             )
 
         with f2:
+            busca_textual = st.text_input(
+                "Busca textual",
+                value="",
+                key="busca_textual_cards",
+                placeholder="Ex: racismo escola torcida"
+            )
+
+        with f3:
             categorias_disponiveis = sorted(
                 [x for x in df_noticias["categoria_publica"].dropna().astype(str).unique().tolist() if x.strip()]
             )
@@ -410,7 +444,7 @@ else:
                 placeholder="Selecione categorias"
             )
 
-        with f3:
+        with f4:
             limite_padrao = total_registros if total_registros <= 120 else 120
             index_limite = opcoes_quantidade.index(limite_padrao) if limite_padrao in opcoes_quantidade else max(0, len(opcoes_quantidade) - 1)
             limite_exibicao = st.selectbox(
@@ -420,7 +454,7 @@ else:
                 key="limite_exibicao_cards"
             )
 
-        with f4:
+        with f5:
             fontes_disponiveis_cards = sorted(
                 [x for x in df_noticias["fonte"].dropna().astype(str).unique().tolist() if x.strip()]
             )
@@ -446,6 +480,8 @@ else:
             limite_data = agora_br - pd.Timedelta(days=dias)
             df_cards = df_cards[df_cards["data_filtro"] >= limite_data]
 
+    df_cards = aplicar_busca_textual(df_cards, busca_textual)
+
     if filtro_fontes_cards:
         df_cards = df_cards[df_cards["fonte"].isin(filtro_fontes_cards)]
 
@@ -457,10 +493,16 @@ else:
         ascending=[False, False]
     ).head(limite_exibicao)
 
-    st.caption(
-        f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
-        f"O banco completo tem {total_banco} registros."
-    )
+    if busca_textual.strip():
+        st.caption(
+            f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
+            f"Busca ativa: “{busca_textual.strip()}”. O banco completo tem {total_banco} registros."
+        )
+    else:
+        st.caption(
+            f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
+            f"O banco completo tem {total_banco} registros."
+        )
 
     QTD_COLUNAS = 3
     cols = st.columns(QTD_COLUNAS)
