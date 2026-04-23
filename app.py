@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
 
-st.set_page_config(page_title="Levantamento de notícias sobre preconceitos e discursos de ódio", layout="wide")
+st.set_page_config(page_title="Agregador de notícias sobre preconceitos e discursos de ódio", layout="wide")
 
 
 def get_db_url() -> str:
@@ -82,7 +82,7 @@ def fechar_noticia():
 
 col_a, col_b = st.columns([5, 1])
 with col_a:
-    st.title("Levantamento de notícias sobre preconceitos e discursos de ódio")
+    st.title("Agregador de notícias sobre preconceitos e discursos de ódio")
 with col_b:
     if st.button("Atualizar agora"):
         if "noticia_id_aberta" in st.session_state:
@@ -294,6 +294,68 @@ else:
     )
 
     st.divider()
+
+    with st.expander("🕒 Linha do tempo das notícias"):
+        df_tempo = df_noticias.copy()
+        df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce")
+        df_tempo = df_tempo.dropna(subset=["data_plot"]).sort_values("data_plot")
+
+        if df_tempo.empty:
+            st.info("Não há datas válidas para montar a linha do tempo.")
+        else:
+            serie_tempo = (
+                df_tempo
+                .set_index("data_plot")
+                .resample("D")
+                .size()
+                .rename("Quantidade de notícias")
+                .reset_index()
+            )
+
+            # evita “buracos” visuais muito grandes quando houver dias sem coleta
+            if not serie_tempo.empty:
+                intervalo_completo = pd.date_range(
+                    start=serie_tempo["data_plot"].min(),
+                    end=serie_tempo["data_plot"].max(),
+                    freq="D"
+                )
+                serie_tempo = (
+                    serie_tempo
+                    .set_index("data_plot")
+                    .reindex(intervalo_completo, fill_value=0)
+                    .rename_axis("data_plot")
+                    .reset_index()
+                )
+
+            serie_tempo["Data"] = serie_tempo["data_plot"].dt.strftime("%Y-%m-%d")
+
+            fig_tempo = px.line(
+                serie_tempo,
+                x="data_plot",
+                y="Quantidade de notícias",
+                markers=True,
+                title="Evolução temporal das notícias coletadas"
+            )
+
+            fig_tempo.update_layout(
+                xaxis_title="Data",
+                yaxis_title="Número de notícias",
+                hovermode="x unified"
+            )
+
+            st.plotly_chart(fig_tempo, use_container_width=True)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Dias com registro", int((serie_tempo["Quantidade de notícias"] > 0).sum()))
+            c2.metric("Pico diário", int(serie_tempo["Quantidade de notícias"].max()))
+            c3.metric("Total no período", int(serie_tempo["Quantidade de notícias"].sum()))
+
+            with st.expander("Ver tabela da série temporal"):
+                st.dataframe(
+                    serie_tempo[["Data", "Quantidade de notícias"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
 
     with st.expander("📊 Estatística dos Portais"):
         stats_fonte = df_noticias["fonte"].value_counts().reset_index()
