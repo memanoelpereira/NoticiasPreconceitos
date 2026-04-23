@@ -298,7 +298,6 @@ else:
     with st.expander("🕒 Linha do tempo das notícias"):
         df_tempo = df_noticias.copy()
         df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce").dt.normalize()
-        df_tempo["data_label"] = df_tempo["data_plot"].dt.strftime("%Y-%m-%d")
         df_tempo = df_tempo.dropna(subset=["data_plot"])
 
         if df_tempo.empty:
@@ -344,7 +343,8 @@ else:
                 }
                 freq_escolhida = freq_map[granularidade]
 
-                def preparar_serie_unica(df_base: pd.DataFrame, freq: str) -> pd.DataFrame:
+
+                def preparar_serie_unica(df_base: pd.DataFrame, freq: str, granularidade_txt: str) -> pd.DataFrame:
                     serie = (
                         df_base
                         .set_index("data_plot")
@@ -353,6 +353,7 @@ else:
                         .rename("Quantidade")
                         .reset_index()
                     )
+
                     if not serie.empty:
                         intervalo = pd.date_range(
                             start=serie["data_plot"].min(),
@@ -366,11 +367,17 @@ else:
                             .rename_axis("data_plot")
                             .reset_index()
                         )
-                    serie["data_plot"] = pd.to_datetime(serie["data_plot"]).dt.normalize()
-                    serie["data_label"] = serie["data_plot"].dt.strftime("%Y-%m-%d")
+
+                    if granularidade_txt == "Mensal":
+                        serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m")
+                    else:
+                        serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m-%d")
+
                     return serie
 
-                def preparar_serie_categoria(df_base: pd.DataFrame, freq: str, coluna: str, nome_coluna: str) -> pd.DataFrame:
+
+                def preparar_serie_categoria(df_base: pd.DataFrame, freq: str, coluna: str, nome_coluna: str,
+                                             granularidade_txt: str) -> pd.DataFrame:
                     df_aux = df_base.copy()
                     df_aux[coluna] = df_aux[coluna].fillna("Não informado").astype(str).str.strip()
                     df_aux.loc[df_aux[coluna] == "", coluna] = "Não informado"
@@ -384,8 +391,6 @@ else:
                     )
 
                     if serie.empty:
-                        serie["data_plot"] = pd.to_datetime(serie["data_plot"]).dt.normalize()
-                        serie["data_label"] = serie["data_plot"].dt.strftime("%Y-%m-%d")
                         return serie
 
                     categorias = sorted(serie[nome_coluna].dropna().unique().tolist())
@@ -406,14 +411,20 @@ else:
                         .reindex(grade, fill_value=0)
                         .reset_index()
                     )
+
+                    if granularidade_txt == "Mensal":
+                        serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m")
+                    else:
+                        serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m-%d")
+
                     return serie
 
                 if modo_linha == "Linha única":
-                    serie_tempo = preparar_serie_unica(df_tempo, freq_escolhida)
+                    serie_tempo = preparar_serie_unica(df_tempo, freq_escolhida, granularidade)
 
                     fig_tempo = px.line(
                         serie_tempo,
-                        x="data_plot",
+                        x="data_str",
                         y="Quantidade",
                         markers=True,
                         title=f"Evolução temporal das notícias ({granularidade.lower()})"
@@ -426,12 +437,13 @@ else:
                         df_tempo,
                         freq_escolhida,
                         "classificacao",
-                        "Classificação"
+                        "Classificação",
+                        granularidade
                     )
 
                     fig_tempo = px.line(
                         serie_tempo,
-                        x="data_plot",
+                        x="data_str",
                         y="Quantidade",
                         color="Classificação",
                         markers=True,
@@ -445,12 +457,13 @@ else:
                         df_tempo,
                         freq_escolhida,
                         "fonte",
-                        "Portal"
+                        "Portal",
+                        granularidade
                     )
 
                     fig_tempo = px.line(
                         serie_tempo,
-                        x="data_plot",
+                        x="data_str",
                         y="Quantidade",
                         color="Portal",
                         markers=True,
@@ -465,25 +478,9 @@ else:
                     hovermode="x unified"
                 )
 
-                if granularidade == "Diária":
-                    fig_tempo.update_xaxes(
-                        tickformat="%Y-%m-%d",
-                        hoverformat="%Y-%m-%d"
-                    )
-                elif granularidade == "Semanal":
-                    fig_tempo.update_xaxes(
-                        tickformat="%Y-%m-%d",
-                        hoverformat="%Y-%m-%d"
-                    )
-                else:  # Mensal
-                    fig_tempo.update_xaxes(
-                        tickformat="%Y-%m",
-                        hoverformat="%Y-%m"
-                    )
-
                 fig_tempo.update_xaxes(
-                    tickformat="%Y-%m-%d",
-                    hoverformat="%Y-%m-%d"
+                    type="category",
+                    tickangle=-45
                 )
 
                 st.plotly_chart(
