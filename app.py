@@ -11,7 +11,7 @@ from sqlalchemy.pool import NullPool
 FUSO_BRASIL = "America/Sao_Paulo"
 
 st.set_page_config(
-    page_title="Agregador de notícias sobre preconceitos e discursos de ódio",
+    page_title="Agregador de notícias sobre preconceitos",
     layout="wide"
 )
 
@@ -42,21 +42,55 @@ def get_engine():
     )
 
 
+def _build_noticias_query(periodo_sql: str, limite: int):
+    if periodo_sql == "tudo":
+        query = text("""
+            SELECT *
+            FROM noticias
+            ORDER BY data_coleta DESC
+            LIMIT :limite
+        """)
+        params = {"limite": int(limite)}
+    else:
+        query = text(f"""
+            SELECT *
+            FROM noticias
+            WHERE data_coleta >= NOW() - INTERVAL '{periodo_sql}'
+            ORDER BY data_coleta DESC
+            LIMIT :limite
+        """)
+        params = {"limite": int(limite)}
+    return query, params
+
+
 @st.cache_data(ttl=60)
-def carregar_dados():
+def carregar_dados(periodo_sql: str, limite: int):
     try:
+        query_noticias, params = _build_noticias_query(periodo_sql, limite)
         with get_engine().connect() as conn:
-            df_noticias = pd.read_sql(
-                text("SELECT * FROM noticias ORDER BY data_coleta DESC"),
-                conn
-            )
+            df_noticias = pd.read_sql(query_noticias, conn, params=params)
             df_entidades = pd.read_sql(
-                text("SELECT * FROM entidades"),
-                conn
+                text("""
+                    SELECT e.*
+                    FROM entidades e
+                    INNER JOIN (
+                        SELECT id
+                        FROM noticias
+                        {where_clause}
+                        ORDER BY data_coleta DESC
+                        LIMIT :limite
+                    ) n ON e.noticia_id = n.id
+                """.format(
+                    where_clause="" if periodo_sql == "tudo" else f"WHERE data_coleta >= NOW() - INTERVAL '{periodo_sql}'"
+                )),
+                conn,
+                params={"limite": int(limite)}
             )
-        return df_noticias, df_entidades, None
+            df_total = pd.read_sql(text("SELECT COUNT(*) AS total FROM noticias"), conn)
+        total_banco = int(df_total.iloc[0]["total"]) if not df_total.empty else 0
+        return df_noticias, df_entidades, total_banco, None
     except Exception as e:
-        return pd.DataFrame(), pd.DataFrame(), str(e)
+        return pd.DataFrame(), pd.DataFrame(), 0, str(e)
 
 
 def safe_text(value) -> str:
@@ -179,37 +213,6 @@ def fechar_noticia():
     st.session_state.noticia_id_aberta = None
 
 
-col_a, col_b = st.columns([5, 1])
-with col_a:
-    st.title("Agregador de notícias sobre preconceitos e discursos de ódio")
-with col_b:
-    if st.button("Atualizar agora", key="btn_atualizar_agregador"):
-        st.session_state.noticia_id_aberta = None
-        st.cache_data.clear()
-        st.rerun()
-
-df_noticias, df_entidades, erro_db = carregar_dados()
-
-if erro_db:
-    st.error(f"Erro ao conectar ao Supabase: {erro_db}")
-
-if not df_noticias.empty and "data_coleta" in df_noticias.columns:
-    df_noticias["data_coleta_fmt"] = df_noticias["data_coleta"].apply(formatar_data_curta)
-    data_mais_recente = formatar_data_curta(df_noticias["data_coleta"].max())
-    df_noticias["categoria_publica"] = df_noticias.apply(categorizar_publicamente, axis=1)
-else:
-    data_mais_recente = "—"
-
-total_noticias = len(df_noticias)
-total_entidades = len(df_entidades)
-
-m1, m2, m3 = st.columns(3)
-m1.metric("Notícias", total_noticias)
-m2.metric("Entidades", total_entidades)
-m3.metric("Última coleta (Brasil)", data_mais_recente)
-
-QTD_COLUNAS = 3
-
 css = """
 <style>
 .card-shell{
@@ -298,8 +301,66 @@ div[data-testid="stButton"] > button.tile-open {
 """
 st.markdown(css, unsafe_allow_html=True)
 
+col_a, col_b = st.columns([5, 1])
+with col_a:
+    st.title("Agregador de notícias sobre preconceitos")
+with col_b:
+    if st.button("Atualizar agora", key="btn_atualizar_agregador"):
+        st.session_state.noticia_id_aberta = None
+        st.cache_data.clear()
+        st.rerun()
+
+with st.expander("⚙️ Recorte da consulta ao banco", expanded=True):
+    q1, q2 = st.columns([1, 1])
+
+    with q1:
+        periodo_consulta_label = st.selectbox(
+            "Período-base da consulta",
+            options=["Últimos 7 dias", "Últimos 15 dias", "Últimos 30 dias", "Últimos 90 dias", "Tudo"],
+            index=2,
+            key="periodo_consulta_sql"
+        )
+
+    mapa_periodo_sql = {
+        "Últimos 7 dias": "7 days",
+        "Últimos 15 dias": "15 days",
+        "Últimos 30 dias": "30 days",
+        "Últimos 90 dias": "90 days",
+        "Tudo": "tudo"
+    }
+
+    with q2:
+        limite_consulta_sql = st.selectbox(
+            "Limite máximo trazido do banco",
+            options=[100, 200, 300, 500, 1000],
+            index=2,
+            key="limite_consulta_sql"
+        )
+
+periodo_sql = mapa_periodo_sql[periodo_consulta_label]
+df_noticias, df_entidades, total_banco, erro_db = carregar_dados(periodo_sql, limite_consulta_sql)
+
+if erro_db:
+    st.error(f"Erro ao conectar ao Supabase: {erro_db}")
+
+if not df_noticias.empty and "data_coleta" in df_noticias.columns:
+    df_noticias["data_coleta_fmt"] = df_noticias["data_coleta"].apply(formatar_data_curta)
+    data_mais_recente = formatar_data_curta(df_noticias["data_coleta"].max())
+    df_noticias["categoria_publica"] = df_noticias.apply(categorizar_publicamente, axis=1)
+else:
+    data_mais_recente = "—"
+
+total_noticias = len(df_noticias)
+total_entidades = len(df_entidades)
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Notícias na janela atual", total_noticias)
+m2.metric("Total no banco", total_banco)
+m3.metric("Entidades", total_entidades)
+m4.metric("Última coleta (Brasil)", data_mais_recente)
+
 if df_noticias.empty:
-    st.warning("Nenhuma notícia no banco ainda. Execute o pipeline primeiro.")
+    st.warning("Nenhuma notícia encontrada para o recorte atual.")
 else:
     peso_entidades = df_entidades["texto"].value_counts().to_dict() if not df_entidades.empty else {}
 
@@ -396,9 +457,14 @@ else:
         ascending=[False, False]
     ).head(limite_exibicao)
 
-    st.caption(f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias disponíveis no banco.")
+    st.caption(
+        f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
+        f"O banco completo tem {total_banco} registros."
+    )
 
+    QTD_COLUNAS = 3
     cols = st.columns(QTD_COLUNAS)
+
     for pos, (_, row) in enumerate(df_cards.iterrows()):
         impacto_val = int(row["impacto"])
         cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
