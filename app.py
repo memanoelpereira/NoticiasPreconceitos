@@ -209,114 +209,65 @@ m2.metric("Entidades", total_entidades)
 m3.metric("Última coleta (Brasil)", data_mais_recente)
 
 QTD_COLUNAS = 3
-CSS_PAD = "12px"
-CSS_FONT_TITULO = "1.0rem"
-CSS_FONT_TAG = "0.74rem"
 
-css = f"""
+css = """
 <style>
-.tile-wrap {{
-    display: flex;
-    flex-direction: column;
-    margin-bottom: 14px;
-}}
-
-.tile-card {{
-    background-color: #2b3a4a;
-    color: white;
-    border-radius: 12px 12px 0 0;
-    overflow: hidden;
-    box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-    margin-bottom: 0 !important;
-    border-left: 5px solid transparent;
-}}
-
-.tile-body {{
-    padding: {CSS_PAD};
-    min-height: 190px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}}
-
-.fonte-tag {{
-    font-size: {CSS_FONT_TAG};
-    background: #1e2933;
-    padding: 4px 8px;
-    border-radius: 6px;
-    width: 100%;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}}
-
-.impact-bar {{
-    width: 100%;
-    height: 5px;
-    background: rgba(255,255,255,0.10);
-    border-radius: 999px;
-    overflow: hidden;
-}}
-
-.impact-bar-fill {{
-    height: 100%;
-    border-radius: 999px;
-}}
-
-.titulo-noticia {{
-    font-weight: 700;
-    font-size: {CSS_FONT_TITULO};
-    line-height: 1.35;
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    flex: 1;
-    min-height: calc(1.35em * 4);
-}}
-
-.data-tag {{
-    font-size: {CSS_FONT_TAG};
-    color: #b7c0cc;
-    margin-top: auto;
-    padding-top: 4px;
-}}
-
-div[data-testid="stButton"] > button.tile-open {{
-    width: 100%;
-    min-height: 2.25rem;
-    margin-top: 0 !important;
-    margin-bottom: 14px !important;
-    border-radius: 0 0 12px 12px;
-    border: none;
-    background: #3d4e5f;
-    color: white;
-    box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-}}
-
-div[data-testid="stButton"] > button.tile-open:hover {{
-    background: #4b6075;
-    color: white;
-}}
-
-div[data-testid="stButton"] > button.tile-open p {{
-    font-weight: 600;
-}}
-
-.overlay-meta {{
+.card-shell{
+    background:#2b3a4a;
+    border-radius:12px 12px 0 0;
+    padding:12px;
+    color:white;
+    min-height:190px;
+    box-shadow:2px 2px 5px rgba(0,0,0,0.3);
+    display:flex;
+    flex-direction:column;
+}
+.card-top{
+    background:#1e2933;
+    border-radius:6px;
+    padding:4px 8px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    font-size:0.74rem;
+    margin-bottom:10px;
+}
+.card-impact-track{
+    width:100%;
+    height:5px;
+    background:rgba(255,255,255,0.10);
+    border-radius:999px;
+    overflow:hidden;
+    margin-bottom:10px;
+}
+.card-title{
+    font-weight:700;
+    font-size:1rem;
+    line-height:1.35;
+    display:-webkit-box;
+    -webkit-line-clamp:4;
+    -webkit-box-orient:vertical;
+    overflow:hidden;
+    min-height:calc(1.35em * 4);
+}
+.card-date{
+    font-size:0.74rem;
+    color:#b7c0cc;
+    margin-top:auto;
+    padding-top:10px;
+}
+.overlay-meta {
     color: #4b5563;
     font-size: 0.95rem;
     margin-bottom: 10px;
-}}
-
-.overlay-title {{
+}
+.overlay-title {
     font-size: 1.35rem;
     line-height: 1.35;
     font-weight: 700;
     margin-bottom: 14px;
-}}
-
-.overlay-badge {{
+}
+.overlay-badge {
     display: inline-block;
     padding: 4px 8px;
     border-radius: 999px;
@@ -325,9 +276,8 @@ div[data-testid="stButton"] > button.tile-open p {{
     font-size: 0.8rem;
     margin-right: 6px;
     margin-bottom: 6px;
-}}
-
-.overlay-badge-tecnica {{
+}
+.overlay-badge-tecnica {
     display: inline-block;
     padding: 4px 8px;
     border-radius: 999px;
@@ -336,7 +286,14 @@ div[data-testid="stButton"] > button.tile-open p {{
     font-size: 0.8rem;
     margin-right: 6px;
     margin-bottom: 6px;
-}}
+}
+div[data-testid="stButton"] > button.tile-open {
+    width: 100%;
+    min-height: 2.25rem;
+    margin-top: 0 !important;
+    margin-bottom: 14px !important;
+    border-radius: 0 0 12px 12px;
+}
 </style>
 """
 st.markdown(css, unsafe_allow_html=True)
@@ -353,9 +310,6 @@ else:
         score = 1 + sum(peso_entidades.get(e, 0) for e in ents)
         return max(1, int(score))
 
-    def altura_por_impacto(impacto: int) -> int:
-        return 190
-
     df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
     df_noticias["data_filtro"] = pd.to_datetime(df_noticias["data_coleta"], errors="coerce")
 
@@ -371,11 +325,9 @@ else:
 
         opcoes_quantidade = [30, 60, 90, 120]
         opcoes_quantidade = [x for x in opcoes_quantidade if x < total_registros]
-
-        if total_registros not in opcoes_quantidade:
+        if total_registros not in opcoes_quantidade and total_registros > 0:
             opcoes_quantidade.append(total_registros)
-
-        opcoes_quantidade = sorted(set([x for x in opcoes_quantidade if x > 0]))
+        opcoes_quantidade = sorted(set(opcoes_quantidade))
 
         with f1:
             filtro_periodo = st.selectbox(
@@ -399,9 +351,7 @@ else:
 
         with f3:
             limite_padrao = total_registros if total_registros <= 120 else 120
-            index_limite = opcoes_quantidade.index(limite_padrao) if limite_padrao in opcoes_quantidade else len(
-                opcoes_quantidade) - 1
-
+            index_limite = opcoes_quantidade.index(limite_padrao) if limite_padrao in opcoes_quantidade else max(0, len(opcoes_quantidade) - 1)
             limite_exibicao = st.selectbox(
                 "Quantidade",
                 opcoes_quantidade,
@@ -451,31 +401,23 @@ else:
     cols = st.columns(QTD_COLUNAS)
     for pos, (_, row) in enumerate(df_cards.iterrows()):
         impacto_val = int(row["impacto"])
-        altura = altura_por_impacto(impacto_val)
         cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
         noticia_id = int(row["id"])
+        largura_impacto = min(100, impacto_val * 10)
 
         with cols[pos % QTD_COLUNAS]:
             st.markdown(
                 f"""
-                <div class="tile-wrap">
-                    <div class="tile-card" style="border-left-color: {cor_borda};">
-                        <div class="tile-body" style="min-height: {altura}px;">
-                            <div class="fonte-tag">
-                                <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">
-                                    {safe_text(row['fonte'])}
-                                </span>
-                                <span style="color:#ffb020;flex-shrink:0;">&#128293; {impacto_val}</span>
-                            </div>
-
-                            <div class="impact-bar">
-                                <div class="impact-bar-fill" style="width:{min(100, impacto_val * 10)}%; background:{cor_borda};"></div>
-                            </div>
-
-                            <div class="titulo-noticia">{safe_text(row['titulo'])}</div>
-                            <div class="data-tag">{safe_text(row.get('data_coleta_fmt', row['data_coleta']))}</div>
-                        </div>
+                <div class="card-shell" style="border-left:5px solid {cor_borda};">
+                    <div class="card-top">
+                        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">{safe_text(row['fonte'])}</span>
+                        <span style="color:#ffb020;flex-shrink:0;">&#128293; {impacto_val}</span>
                     </div>
+                    <div class="card-impact-track">
+                        <div style="width:{largura_impacto}%;height:5px;background:{cor_borda};border-radius:999px;"></div>
+                    </div>
+                    <div class="card-title">{safe_text(row['titulo'])}</div>
+                    <div class="card-date">{safe_text(row.get('data_coleta_fmt', row['data_coleta']))}</div>
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -544,7 +486,8 @@ else:
                     "Filtrar portais",
                     options=fontes_disponiveis,
                     default=[],
-                    key="timeline_fontes"
+                    key="timeline_fontes",
+                    placeholder="Selecione portais"
                 )
 
             if filtro_fontes:
@@ -686,10 +629,7 @@ else:
                     yaxis_title="Número de notícias",
                     hovermode="x unified"
                 )
-                fig_tempo.update_xaxes(
-                    type="category",
-                    tickangle=-45
-                )
+                fig_tempo.update_xaxes(type="category", tickangle=-45)
 
                 st.plotly_chart(
                     fig_tempo,
