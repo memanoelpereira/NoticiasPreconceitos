@@ -595,6 +595,15 @@ div[data-testid="stButton"] > button.botao-fechar-noticia:hover {
     color: white;
     border: 1px solid #7f1d1d;
 }
+div[data-testid="stButton"] > button[kind="primary"] {
+    font-weight: 700;
+    border-radius: 10px;
+}
+div[data-testid="stButton"] > button[kind="primary"] {
+    font-weight: 700;
+    border-radius: 10px;
+    min-height: 2.5rem;
+}
 </style>
 """
 st.markdown(css, unsafe_allow_html=True)
@@ -850,35 +859,33 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                     st.write("Nenhuma entidade extraída para este item.")
 
             st.markdown("---")
+            st.markdown('<div style="display:flex;justify-content:flex-end;">', unsafe_allow_html=True)
 
-            rod1, rod2, rod3 = st.columns([5, 1.2, 1.2])
-
-            with rod3:
-                if st.button("Fechar", key=f"fechar_painel_final_{int(row_topo['id'])}", use_container_width=True):
+            col_esp, col_btn = st.columns([6.5, 1.4])
+            with col_btn:
+                if st.button(
+                        "Fechar",
+                        key=f"fechar_painel_final_{int(row_topo['id'])}",
+                        use_container_width=True,
+                        type="primary"
+                ):
                     fechar_noticia()
                     st.rerun()
 
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
         with box2:
-            st.markdown('<div class="painel-foco-acoes">', unsafe_allow_html=True)
-            if st.button("Fechar", key=f"fechar_painel_topo_{int(row_topo['id'])}", use_container_width=True):
+            st.markdown("<div style='padding-top:4px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                    "Fechar",
+                    key=f"fechar_painel_topo_{int(row_topo['id'])}",
+                    use_container_width=True,
+                    type="primary"
+            ):
                 fechar_noticia()
                 st.rerun()
 
-            st.markdown(
-                """
-                <script>
-                const botoes = window.parent.document.querySelectorAll('div[data-testid="stButton"] button');
-                botoes.forEach(btn => {
-                  if (btn.innerText.trim() === 'Fechar') {
-                    btn.classList.add('botao-fechar-noticia');
-                  }
-                });
-                </script>
-                """,
-                unsafe_allow_html=True
-            )
+
             st.markdown('<div class="painel-foco-nota">Painel em foco</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
