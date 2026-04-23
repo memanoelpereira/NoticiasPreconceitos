@@ -298,6 +298,7 @@ else:
     with st.expander("🕒 Linha do tempo das notícias"):
         df_tempo = df_noticias.copy()
         df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce").dt.normalize()
+        df_tempo["data_label"] = df_tempo["data_plot"].dt.strftime("%Y-%m-%d")
         df_tempo = df_tempo.dropna(subset=["data_plot"])
 
         if df_tempo.empty:
@@ -365,6 +366,8 @@ else:
                             .rename_axis("data_plot")
                             .reset_index()
                         )
+                    serie["data_plot"] = pd.to_datetime(serie["data_plot"]).dt.normalize()
+                    serie["data_label"] = serie["data_plot"].dt.strftime("%Y-%m-%d")
                     return serie
 
                 def preparar_serie_categoria(df_base: pd.DataFrame, freq: str, coluna: str, nome_coluna: str) -> pd.DataFrame:
@@ -381,6 +384,8 @@ else:
                     )
 
                     if serie.empty:
+                        serie["data_plot"] = pd.to_datetime(serie["data_plot"]).dt.normalize()
+                        serie["data_label"] = serie["data_plot"].dt.strftime("%Y-%m-%d")
                         return serie
 
                     categorias = sorted(serie[nome_coluna].dropna().unique().tolist())
@@ -460,6 +465,27 @@ else:
                     hovermode="x unified"
                 )
 
+                if granularidade == "Diária":
+                    fig_tempo.update_xaxes(
+                        tickformat="%Y-%m-%d",
+                        hoverformat="%Y-%m-%d"
+                    )
+                elif granularidade == "Semanal":
+                    fig_tempo.update_xaxes(
+                        tickformat="%Y-%m-%d",
+                        hoverformat="%Y-%m-%d"
+                    )
+                else:  # Mensal
+                    fig_tempo.update_xaxes(
+                        tickformat="%Y-%m",
+                        hoverformat="%Y-%m"
+                    )
+
+                fig_tempo.update_xaxes(
+                    tickformat="%Y-%m-%d",
+                    hoverformat="%Y-%m-%d"
+                )
+
                 st.plotly_chart(
                     fig_tempo,
                     use_container_width=True,
@@ -531,19 +557,6 @@ else:
                 key="plot_top_entidades"
             )
 
-    with st.expander("📊 Estatística dos Portais"):
-        stats_fonte = df_noticias["fonte"].value_counts().reset_index()
-        stats_fonte.columns = ["Portal", "Quantidade"]
-        fig = px.bar(stats_fonte, x="Portal", y="Quantidade", title="Volume de Notícias Relevantes por Fonte")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with st.expander("🎯 Temas e Personagens (NER)"):
-        if not df_entidades.empty:
-            stats_temas = df_entidades["texto"].value_counts().head(20).reset_index()
-            stats_temas.columns = ["Entidade", "Frequência"]
-            fig2 = px.bar(stats_temas, y="Entidade", x="Frequência", orientation="h", title="Top 20 Entidades mais Frequentes")
-            fig2.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig2, use_container_width=True)
 
 if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
     selecionada = df_noticias[df_noticias["id"] == st.session_state.noticia_id_aberta]
