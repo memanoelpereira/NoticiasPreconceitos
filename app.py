@@ -9,6 +9,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
+
 FUSO_BRASIL = "America/Sao_Paulo"
 
 st.set_page_config(
@@ -46,10 +47,11 @@ def get_engine():
 def _build_noticias_query(periodo_sql: str, limite: int):
     if periodo_sql == "tudo":
         query = text("""
-                     SELECT *
-                     FROM noticias
-                     ORDER BY data_coleta DESC LIMIT :limite
-                     """)
+            SELECT *
+            FROM noticias
+            ORDER BY data_coleta DESC
+            LIMIT :limite
+        """)
         params = {"limite": int(limite)}
     else:
         query = text(f"""
@@ -129,72 +131,72 @@ def categorizar_publicamente(row) -> str:
         return any(t in texto for t in termos)
 
     if tem(
-            "racismo", "racista", "injuria racial", "injúria racial",
-            "ofensa racista", "discriminacao racial", "discriminação racial",
-            "negro", "negra", "pretos", "pretas", "população negra", "populacao negra",
-            "cotas raciais"
+        "racismo", "racista", "injuria racial", "injúria racial",
+        "ofensa racista", "discriminacao racial", "discriminação racial",
+        "negro", "negra", "pretos", "pretas", "população negra", "populacao negra",
+        "cotas raciais"
     ):
         return "Racismo e discriminação racial"
 
     if tem(
-            "misoginia", "misóginia", "machismo", "sexismo",
-            "violencia contra a mulher", "violência contra a mulher",
-            "violencia contra mulheres", "violência contra mulheres",
-            "feminicidio", "feminicídio"
+        "misoginia", "misóginia", "machismo", "sexismo",
+        "violencia contra a mulher", "violência contra a mulher",
+        "violencia contra mulheres", "violência contra mulheres",
+        "feminicidio", "feminicídio"
     ):
         return "Gênero, misoginia e violência contra mulheres"
 
     if tem(
-            "homofobia", "transfobia", "lgbtfobia", "lgbt", "lgbtqia",
-            "travesti", "travestis", "gay", "gays", "lésbica", "lesbica",
-            "bissexual", "não-binário", "nao-binario", "mulher trans", "homem trans",
-            "pessoa trans"
+        "homofobia", "transfobia", "lgbtfobia", "lgbt", "lgbtqia",
+        "travesti", "travestis", "gay", "gays", "lésbica", "lesbica",
+        "bissexual", "não-binário", "nao-binario", "mulher trans", "homem trans",
+        "pessoa trans"
     ):
         return "LGBTQIA+ e LGBTfobia"
 
     if tem(
-            "intolerancia religiosa", "intolerância religiosa",
-            "terreiro", "terreiros", "candomble", "candomblé", "umbanda",
-            "mesquita", "sinagoga", "templo", "hijab", "ataque a terreiro"
+        "intolerancia religiosa", "intolerância religiosa",
+        "terreiro", "terreiros", "candomble", "candomblé", "umbanda",
+        "mesquita", "sinagoga", "templo", "hijab", "ataque a terreiro"
     ):
         return "Intolerância religiosa"
 
     if tem(
-            "xenofobia", "xenófobia", "imigrante", "imigrantes",
-            "migrante", "migrantes", "refugiado", "refugiados",
-            "migração", "migracao"
+        "xenofobia", "xenófobia", "imigrante", "imigrantes",
+        "migrante", "migrantes", "refugiado", "refugiados",
+        "migração", "migracao"
     ):
         return "Xenofobia, migração e refúgio"
 
     if tem(
-            "indigena", "indígena", "indigenas", "indígenas",
-            "quilombola", "quilombolas", "povos originarios", "povos originários",
-            "demarcacao", "demarcação", "terras indígenas", "terras indigenas",
-            "comunidades tradicionais", "comunidade tradicional"
+        "indigena", "indígena", "indigenas", "indígenas",
+        "quilombola", "quilombolas", "povos originarios", "povos originários",
+        "demarcacao", "demarcação", "terras indígenas", "terras indigenas",
+        "comunidades tradicionais", "comunidade tradicional"
     ):
         return "Povos indígenas, quilombolas e comunidades tradicionais"
 
     if tem(
-            "capacitismo", "capacitista", "pessoa com deficiência",
-            "pessoa com deficiencia", "pcd", "autista", "autistas",
-            "deficiente", "deficiência", "deficiencia"
+        "capacitismo", "capacitista", "pessoa com deficiência",
+        "pessoa com deficiencia", "pcd", "autista", "autistas",
+        "deficiente", "deficiência", "deficiencia"
     ):
         return "Capacitismo e deficiência"
 
     if tem(
-            "futebol", "torcida", "torcedor", "torcedores", "estadio", "estádio",
-            "jogador", "jogadora", "clube", "campeonato",
-            "show", "espetaculo", "espetáculo", "musica", "música",
-            "teatro", "cinema", "samba", "funk", "rap", "hip hop",
-            "cultura popular", "festa popular", "lazer popular"
+        "futebol", "torcida", "torcedor", "torcedores", "estadio", "estádio",
+        "jogador", "jogadora", "clube", "campeonato",
+        "show", "espetaculo", "espetáculo", "musica", "música",
+        "teatro", "cinema", "samba", "funk", "rap", "hip hop",
+        "cultura popular", "festa popular", "lazer popular"
     ):
         return "Esporte, cultura e lazer com discriminação"
 
     if tem(
-            "justiça", "justica", "tribunal", "stf", "stj",
-            "direitos humanos", "ministério público", "ministerio publico",
-            "projeto de lei", "política pública", "politica publica",
-            "ações afirmativas", "acoes afirmativas", "lei de cotas"
+        "justiça", "justica", "tribunal", "stf", "stj",
+        "direitos humanos", "ministério público", "ministerio publico",
+        "projeto de lei", "política pública", "politica publica",
+        "ações afirmativas", "acoes afirmativas", "lei de cotas"
     ):
         return "Direitos, justiça e políticas públicas"
 
@@ -212,11 +214,11 @@ def aplicar_busca_textual(df: pd.DataFrame, consulta: str) -> pd.DataFrame:
 
     df_busca = df.copy()
     df_busca["_texto_busca"] = (
-            df_busca["titulo"].fillna("").astype(str) + " "
-            + df_busca["resumo"].fillna("").astype(str) + " "
-            + df_busca["texto_completo"].fillna("").astype(str) + " "
-            + df_busca["fonte"].fillna("").astype(str) + " "
-            + df_busca["categoria_publica"].fillna("").astype(str)
+        df_busca["titulo"].fillna("").astype(str) + " "
+        + df_busca["resumo"].fillna("").astype(str) + " "
+        + df_busca["texto_completo"].fillna("").astype(str) + " "
+        + df_busca["fonte"].fillna("").astype(str) + " "
+        + df_busca["categoria_publica"].fillna("").astype(str)
     ).str.lower()
 
     mascara = pd.Series(True, index=df_busca.index)
@@ -415,6 +417,56 @@ def plotar_alertas_adaptativos(df_alerta: pd.DataFrame, meta: dict):
     return fig
 
 
+def plotar_alertas_adaptativos_categoria(df_alerta: pd.DataFrame, meta: dict, titulo_categoria: str, ymax: float | None = None):
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df_alerta["data_str"],
+        y=df_alerta["limite_superior"],
+        mode="lines",
+        name="Limite superior esperado",
+        line=dict(dash="dash")
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df_alerta["data_str"],
+        y=df_alerta["esperado"],
+        mode="lines",
+        name="Linha esperada"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df_alerta["data_str"],
+        y=df_alerta["Quantidade"],
+        mode="lines+markers",
+        name="Observado"
+    ))
+
+    df_alert = df_alerta[df_alerta["alerta"]].copy()
+    if not df_alert.empty:
+        fig.add_trace(go.Scatter(
+            x=df_alert["data_str"],
+            y=df_alert["Quantidade"],
+            mode="markers",
+            name="Alertas",
+            marker=dict(size=10, symbol="circle-open")
+        ))
+
+    fig.update_layout(
+        title=f"{titulo_categoria} — {meta['modelo']}",
+        xaxis_title="Data",
+        yaxis_title="Número de notícias",
+        hovermode="x unified",
+        showlegend=True
+    )
+    fig.update_xaxes(type="category", tickangle=-45)
+
+    if ymax is not None and ymax > 0:
+        fig.update_yaxes(range=[0, ymax])
+
+    return fig
+
+
 if "noticia_id_aberta" not in st.session_state:
     st.session_state.noticia_id_aberta = None
 
@@ -578,14 +630,12 @@ if df_noticias.empty:
 else:
     peso_entidades = df_entidades["texto"].value_counts().to_dict() if not df_entidades.empty else {}
 
-
     def calcular_impacto(noticia_id):
         if df_entidades.empty:
             return 1
         ents = df_entidades[df_entidades["noticia_id"] == noticia_id]["texto"]
         score = 1 + sum(peso_entidades.get(e, 0) for e in ents)
         return max(1, int(score))
-
 
     df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
     df_noticias["data_filtro"] = pd.to_datetime(df_noticias["data_coleta"], errors="coerce")
@@ -636,8 +686,7 @@ else:
 
         with f4:
             limite_padrao = total_registros if total_registros <= 120 else 120
-            index_limite = opcoes_quantidade.index(limite_padrao) if limite_padrao in opcoes_quantidade else max(0,
-                                                                                                                 len(opcoes_quantidade) - 1)
+            index_limite = opcoes_quantidade.index(limite_padrao) if limite_padrao in opcoes_quantidade else max(0, len(opcoes_quantidade) - 1)
             limite_exibicao = st.selectbox(
                 "Quantidade",
                 opcoes_quantidade,
@@ -772,7 +821,7 @@ else:
             with col_ctrl2:
                 modo_linha = st.selectbox(
                     "Modo",
-                    options=["Linha única", "Por categoria pública", "Por portal", "Alertas adaptativos"],
+                    options=["Linha única", "Por categoria pública", "Por portal", "Alertas adaptativos", "Alertas por categoria pública"],
                     index=0,
                     key="timeline_modo"
                 )
@@ -843,6 +892,101 @@ else:
                                     use_container_width=True,
                                     hide_index=True
                                 )
+
+                elif modo_linha == "Alertas por categoria pública":
+                    if granularidade != "Diária":
+                        st.info("Os alertas por categoria pública estão habilitados apenas para a granularidade diária.")
+                    else:
+                        categorias_disp = sorted(
+                            [c for c in df_tempo["categoria_publica"].dropna().astype(str).unique().tolist() if c.strip()]
+                        )
+
+                        categorias_sel = st.multiselect(
+                            "Selecione as categorias para comparar",
+                            options=categorias_disp,
+                            default=categorias_disp[:3] if len(categorias_disp) >= 3 else categorias_disp,
+                            key="categorias_alerta_timeline",
+                            placeholder="Selecione categorias públicas"
+                        )
+
+                        if not categorias_sel:
+                            st.info("Selecione ao menos uma categoria pública.")
+                        else:
+                            resultados = []
+                            ymax_global = 0.0
+
+                            for cat in categorias_sel:
+                                df_cat = df_tempo[df_tempo["categoria_publica"] == cat].copy()
+                                serie_cat = preparar_serie_alerta_total(df_cat)
+                                df_alerta_cat, meta_cat = calcular_alertas_adaptativos(serie_cat)
+
+                                if not df_alerta_cat.empty:
+                                    max_local = pd.concat(
+                                        [
+                                            df_alerta_cat["Quantidade"],
+                                            df_alerta_cat["limite_superior"].fillna(0)
+                                        ],
+                                        axis=0
+                                    ).max()
+                                    ymax_global = max(ymax_global, float(max_local))
+
+                                resultados.append((cat, df_alerta_cat, meta_cat))
+
+                            if ymax_global <= 0:
+                                ymax_global = 1.0
+                            else:
+                                ymax_global *= 1.10
+
+                            resumo_alertas = []
+
+                            for i, (cat, df_alerta_cat, meta_cat) in enumerate(resultados):
+                                st.markdown(f"### {cat}")
+
+                                if not meta_cat["ativo"]:
+                                    st.warning(
+                                        f"{meta_cat['descricao']} "
+                                        f"Atualmente há {meta_cat['pontos_validos']} pontos diários para esta categoria."
+                                    )
+                                    continue
+
+                                fig_cat = plotar_alertas_adaptativos_categoria(
+                                    df_alerta_cat,
+                                    meta_cat,
+                                    titulo_categoria=cat,
+                                    ymax=ymax_global
+                                )
+
+                                st.plotly_chart(
+                                    fig_cat,
+                                    use_container_width=True,
+                                    key=f"plot_alerta_categoria_{i}_{cat}"
+                                )
+
+                                ultimo_valido = df_alerta_cat.dropna(subset=["esperado"]).copy()
+                                total_alertas_cat = int(df_alerta_cat["alerta"].sum())
+
+                                if not ultimo_valido.empty:
+                                    ultima = ultimo_valido.iloc[-1]
+                                    c1, c2, c3, c4 = st.columns(4)
+                                    c1.metric("Modelo ativo", meta_cat["modelo"])
+                                    c2.metric("Observado mais recente", int(ultima["Quantidade"]))
+                                    c3.metric("Esperado mais recente", round(float(ultima["esperado"]), 2))
+                                    c4.metric("Dias em alerta", total_alertas_cat)
+
+                                resumo_alertas.append({
+                                    "Categoria pública": cat,
+                                    "Modelo": meta_cat["modelo"],
+                                    "Dias em alerta": total_alertas_cat
+                                })
+
+                            if resumo_alertas:
+                                with st.expander("Resumo comparativo dos alertas por categoria"):
+                                    st.dataframe(
+                                        pd.DataFrame(resumo_alertas).sort_values("Dias em alerta", ascending=False),
+                                        use_container_width=True,
+                                        hide_index=True
+                                    )
+
                 else:
                     freq_map = {
                         "Diária": "D",
@@ -850,7 +994,6 @@ else:
                         "Mensal": "MS"
                     }
                     freq_escolhida = freq_map[granularidade]
-
 
                     def preparar_serie_unica(df_base: pd.DataFrame, freq: str, granularidade_txt: str) -> pd.DataFrame:
                         serie = (
@@ -882,7 +1025,6 @@ else:
                             serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m-%d")
 
                         return serie
-
 
                     def preparar_serie_categoria(df_base: pd.DataFrame, freq: str, coluna: str, nome_coluna: str,
                                                  granularidade_txt: str) -> pd.DataFrame:
@@ -926,7 +1068,6 @@ else:
                             serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m-%d")
 
                         return serie
-
 
                     if modo_linha == "Linha única":
                         serie_tempo = preparar_serie_unica(df_tempo, freq_escolhida, granularidade)
@@ -1016,15 +1157,13 @@ else:
                             )
                         elif modo_linha == "Por categoria pública":
                             st.dataframe(
-                                tabela_exibicao[["data_str", "Categoria pública", "Quantidade"]].rename(
-                                    columns={"data_str": "Data"}),
+                                tabela_exibicao[["data_str", "Categoria pública", "Quantidade"]].rename(columns={"data_str": "Data"}),
                                 use_container_width=True,
                                 hide_index=True
                             )
                         else:
                             st.dataframe(
-                                tabela_exibicao[["data_str", "Portal", "Quantidade"]].rename(
-                                    columns={"data_str": "Data"}),
+                                tabela_exibicao[["data_str", "Portal", "Quantidade"]].rename(columns={"data_str": "Data"}),
                                 use_container_width=True,
                                 hide_index=True
                             )
@@ -1086,11 +1225,10 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
     if not df_entidades.empty:
         entidades_rel = df_entidades[
             df_entidades["noticia_id"] == st.session_state.noticia_id_aberta
-            ].copy()
+        ].copy()
 
     if not selecionada.empty:
         row = selecionada.iloc[0]
-
 
         @st.dialog("Notícia", width="large")
         def modal_noticia():
@@ -1111,13 +1249,11 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 badges.append(f'<span class="overlay-badge-tecnica">triagem: {safe_text(row["classificacao"])}</span>')
 
             if "criterio_filtro" in row.index and pd.notna(row["criterio_filtro"]):
-                badges.append(
-                    f'<span class="overlay-badge-tecnica">critério: {safe_text(row["criterio_filtro"])}</span>')
+                badges.append(f'<span class="overlay-badge-tecnica">critério: {safe_text(row["criterio_filtro"])}</span>')
 
             if "score_relevancia" in row.index and pd.notna(row["score_relevancia"]):
                 try:
-                    badges.append(
-                        f'<span class="overlay-badge-tecnica">score {float(row["score_relevancia"]):.3f}</span>')
+                    badges.append(f'<span class="overlay-badge-tecnica">score {float(row["score_relevancia"]):.3f}</span>')
                 except Exception:
                     pass
 
@@ -1144,8 +1280,7 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 st.markdown(resumo)
                 st.info("O banco tem apenas resumo para este item. O texto completo não foi capturado nesta coleta.")
             else:
-                st.info(
-                    "Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
+                st.info("Este registro não tem texto completo armazenado. Para itens antigos, isso é esperado até uma nova coleta com o pipeline atualizado.")
 
             if url_fonte:
                 st.link_button("Abrir fonte original", url_fonte)
@@ -1178,6 +1313,5 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                     )
                 else:
                     st.write("Nenhuma entidade extraída para este item.")
-
 
         modal_noticia()
