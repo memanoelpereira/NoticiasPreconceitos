@@ -1231,23 +1231,57 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
     if not selecionada.empty:
         row = selecionada.iloc[0]
 
-        @st.dialog("Notícia", width="large")
-        def modal_noticia():
-            topo_esq, topo_dir = st.columns([6, 1])
+        st.divider()
 
-            with topo_esq:
-                st.markdown(
-                    f'<div class="overlay-meta">{safe_text(row["fonte"])} · {safe_text(formatar_data_curta(row["data_coleta"]))}</div>',
-                    unsafe_allow_html=True
-                )
+        st.markdown(
+            """
+            <style>
+            .painel-noticia {
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 16px;
+                padding: 20px 22px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+                margin-top: 8px;
+                margin-bottom: 12px;
+            }
+            .painel-noticia-topo {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 16px;
+                margin-bottom: 10px;
+            }
+            .painel-noticia-meta {
+                color: #4b5563;
+                font-size: 0.95rem;
+                margin-bottom: 8px;
+            }
+            .painel-noticia-titulo {
+                font-size: 1.45rem;
+                line-height: 1.35;
+                font-weight: 700;
+                margin-bottom: 14px;
+                color: #111827;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
 
-            with topo_dir:
-                if st.button("Fechar", key=f"fechar_modal_{int(row['id'])}"):
-                    fechar_noticia()
-                    st.rerun()
+        topo_esq, topo_dir = st.columns([6, 1])
 
+        with topo_esq:
             st.markdown(
-                f'<div class="overlay-title">{safe_text(row["titulo"])}</div>',
+                f"""
+                <div class="painel-noticia">
+                    <div class="painel-noticia-meta">
+                        {safe_text(row["fonte"])} · {safe_text(formatar_data_curta(row["data_coleta"]))}
+                    </div>
+                    <div class="painel-noticia-titulo">
+                        {safe_text(row["titulo"])}
+                    </div>
+                """,
                 unsafe_allow_html=True
             )
 
@@ -1324,8 +1358,11 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 else:
                     st.write("Nenhuma entidade extraída para este item.")
 
-            if st.button("Fechar acompanhamento", key=f"fechar_rodape_{int(row['id'])}"):
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with topo_dir:
+            st.write("")
+            st.write("")
+            if st.button("Fechar", key=f"fechar_painel_{int(row['id'])}", use_container_width=True):
                 fechar_noticia()
                 st.rerun()
-
-        modal_noticia()
