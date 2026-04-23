@@ -7,6 +7,8 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
+FUSO_BRASIL = "America/Sao_Paulo"
+
 
 st.set_page_config(page_title="Agregador de notícias sobre preconceitos e discursos de ódio", layout="wide")
 
@@ -58,11 +60,21 @@ def safe_text(value) -> str:
     return html.escape(str(value))
 
 
-def formatar_data_curta(value) -> str:
+def formatar_data_curta(value, somente_data: bool = False) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "—"
     try:
-        ts = pd.to_datetime(value)
+        ts = pd.to_datetime(value, errors="coerce")
+        if pd.isna(ts):
+            return "—"
+
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.tz_localize("UTC")
+
+        ts = ts.tz_convert(FUSO_BRASIL)
+
+        if somente_data:
+            return ts.strftime("%Y-%m-%d")
         return ts.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(value)
@@ -96,7 +108,7 @@ if erro_db:
     st.error(f"Erro ao conectar ao Supabase: {erro_db}")
 
 if not df_noticias.empty and "data_coleta" in df_noticias.columns:
-    df_noticias["data_coleta_fmt"] = pd.to_datetime(df_noticias["data_coleta"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+    df_noticias["data_coleta_fmt"] = df_noticias["data_coleta"].apply(formatar_data_curta)
     data_mais_recente = formatar_data_curta(df_noticias["data_coleta"].max())
 else:
     data_mais_recente = "—"
