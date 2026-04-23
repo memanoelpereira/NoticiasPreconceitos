@@ -1231,59 +1231,125 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
     if not selecionada.empty:
         row = selecionada.iloc[0]
 
-        st.divider()
-
         st.markdown(
             """
             <style>
-            .painel-noticia {
-                background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 16px;
-                padding: 20px 22px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-                margin-top: 8px;
-                margin-bottom: 12px;
+            .overlay-backdrop {
+                position: fixed;
+                inset: 0;
+                background: rgba(17, 24, 39, 0.52);
+                z-index: 999990;
+                pointer-events: none;
             }
-            .painel-noticia-topo {
+
+            .overlay-anchor {
+                position: relative;
+                z-index: 999991;
+            }
+
+            .overlay-shell {
+                max-width: 1080px;
+                margin: 0 auto 24px auto;
+                background: #ffffff;
+                border-radius: 18px;
+                box-shadow: 0 18px 50px rgba(0,0,0,0.28);
+                border: 1px solid #e5e7eb;
+                overflow: hidden;
+            }
+
+            .overlay-shell-inner {
+                padding: 22px 24px 24px 24px;
+            }
+
+            .overlay-header {
                 display: flex;
                 justify-content: space-between;
                 align-items: flex-start;
-                gap: 16px;
-                margin-bottom: 10px;
-            }
-            .painel-noticia-meta {
-                color: #4b5563;
-                font-size: 0.95rem;
+                gap: 18px;
                 margin-bottom: 8px;
             }
-            .painel-noticia-titulo {
+
+            .overlay-header-left {
+                min-width: 0;
+                flex: 1;
+            }
+
+            .overlay-meta-fake {
+                color: #4b5563;
+                font-size: 0.95rem;
+                margin-bottom: 10px;
+            }
+
+            .overlay-title-fake {
+                color: #111827;
                 font-size: 1.45rem;
                 line-height: 1.35;
                 font-weight: 700;
                 margin-bottom: 14px;
-                color: #111827;
+            }
+
+            .overlay-body-wrap {
+                max-height: 72vh;
+                overflow-y: auto;
+                padding-right: 4px;
+            }
+
+            .overlay-body-wrap::-webkit-scrollbar {
+                width: 10px;
+            }
+
+            .overlay-body-wrap::-webkit-scrollbar-thumb {
+                background: #c7cdd6;
+                border-radius: 999px;
+            }
+
+            .overlay-body-wrap::-webkit-scrollbar-track {
+                background: #eef2f7;
+                border-radius: 999px;
+            }
+
+            .overlay-floating-note {
+                color: #6b7280;
+                font-size: 0.84rem;
+                margin-bottom: 8px;
+            }
+
+            .overlay-close-area {
+                min-width: 120px;
             }
             </style>
             """,
             unsafe_allow_html=True
         )
 
-        topo_esq, topo_dir = st.columns([6, 1])
+        st.markdown('<div class="overlay-backdrop"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="overlay-anchor" id="overlay-noticia-anchor">', unsafe_allow_html=True)
 
-        with topo_esq:
-            st.markdown(
-                f"""
-                <div class="painel-noticia">
-                    <div class="painel-noticia-meta">
+        container_overlay = st.container(border=False)
+        with container_overlay:
+            st.markdown('<div class="overlay-shell"><div class="overlay-shell-inner">', unsafe_allow_html=True)
+
+            topo_esq, topo_dir = st.columns([8, 1.3], vertical_alignment="top")
+
+            with topo_esq:
+                st.markdown(
+                    f"""
+                    <div class="overlay-meta-fake">
                         {safe_text(row["fonte"])} · {safe_text(formatar_data_curta(row["data_coleta"]))}
                     </div>
-                    <div class="painel-noticia-titulo">
+                    <div class="overlay-title-fake">
                         {safe_text(row["titulo"])}
                     </div>
-                """,
-                unsafe_allow_html=True
-            )
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with topo_dir:
+                st.markdown('<div class="overlay-close-area">', unsafe_allow_html=True)
+                if st.button("Fechar", key=f"fechar_overlay_{int(row['id'])}", use_container_width=True):
+                    fechar_noticia()
+                    st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
 
             badges = []
             if "categoria_publica" in row.index and pd.notna(row["categoria_publica"]):
@@ -1305,6 +1371,7 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 badges.append(f'<span class="overlay-badge-tecnica">impacto {int(row["impacto"])}</span>')
 
             st.markdown("".join(badges), unsafe_allow_html=True)
+            st.markdown('<div class="overlay-body-wrap">', unsafe_allow_html=True)
 
             texto_completo = None
             resumo = None
@@ -1358,11 +1425,17 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 else:
                     st.write("Nenhuma entidade extraída para este item.")
 
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown('</div></div></div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        with topo_dir:
-            st.write("")
-            st.write("")
-            if st.button("Fechar", key=f"fechar_painel_{int(row['id'])}", use_container_width=True):
-                fechar_noticia()
-                st.rerun()
+        st.markdown(
+            """
+            <script>
+            const anchor = window.parent.document.getElementById("overlay-noticia-anchor");
+            if (anchor) {
+                anchor.scrollIntoView({behavior: "smooth", block: "start"});
+            }
+            </script>
+            """,
+            unsafe_allow_html=True
+        )
