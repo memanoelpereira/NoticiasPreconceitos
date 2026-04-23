@@ -295,8 +295,6 @@ else:
 
     st.divider()
 
-    st.divider()
-
     with st.expander("🕒 Linha do tempo das notícias"):
         df_tempo = df_noticias.copy()
         df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce").dt.normalize()
@@ -462,7 +460,11 @@ else:
                     hovermode="x unified"
                 )
 
-                st.plotly_chart(fig_tempo, use_container_width=True)
+                st.plotly_chart(
+                    fig_tempo,
+                    use_container_width=True,
+                    key=f"plot_timeline_{granularidade}_{modo_linha}_{'_'.join(filtro_fontes) if filtro_fontes else 'todos'}"
+                )
 
                 if modo_linha == "Linha única":
                     total_periodo = int(tabela_exibicao["Quantidade"].sum())
@@ -511,7 +513,11 @@ else:
         stats_fonte = df_noticias["fonte"].value_counts().reset_index()
         stats_fonte.columns = ["Portal", "Quantidade"]
         fig = px.bar(stats_fonte, x="Portal", y="Quantidade", title="Volume de Notícias Relevantes por Fonte")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key="plot_estatistica_portais"
+        )
 
     with st.expander("🎯 Temas e Personagens (NER)"):
         if not df_entidades.empty:
@@ -519,7 +525,11 @@ else:
             stats_temas.columns = ["Entidade", "Frequência"]
             fig2 = px.bar(stats_temas, y="Entidade", x="Frequência", orientation="h", title="Top 20 Entidades mais Frequentes")
             fig2.update_layout(yaxis={"categoryorder": "total ascending"})
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(
+                fig2,
+                use_container_width=True,
+                key="plot_top_entidades"
+            )
 
     with st.expander("📊 Estatística dos Portais"):
         stats_fonte = df_noticias["fonte"].value_counts().reset_index()
