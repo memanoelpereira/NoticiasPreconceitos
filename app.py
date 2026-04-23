@@ -28,8 +28,6 @@ def get_db_url() -> str:
 
     env_url = os.getenv("SUPABASE_DB_URL", "").strip()
     if env_url:
-        st.sidebar.write("**Fonte da conexão:** variável de ambiente")
-        st.sidebar.code(env_url[:80] + ("..." if len(env_url) > 80 else ""))
         return env_url
 
     raise RuntimeError("SUPABASE_DB_URL não configurada.")
@@ -123,8 +121,7 @@ def categorizar_publicamente(row) -> str:
     if tem(
         "intolerancia religiosa", "intolerância religiosa",
         "terreiro", "terreiros", "candomble", "candomblé", "umbanda",
-        "mesquita", "sinagoga", "templo", "hijab",
-        "ataque a terreiro"
+        "mesquita", "sinagoga", "templo", "hijab", "ataque a terreiro"
     ):
         return "Intolerância religiosa"
 
@@ -133,7 +130,7 @@ def categorizar_publicamente(row) -> str:
         "migrante", "migrantes", "refugiado", "refugiados",
         "migração", "migracao"
     ):
-        return "Xenofobia, migração e refugiados"
+        return "Xenofobia, migração e refúgio"
 
     if tem(
         "indigena", "indígena", "indigenas", "indígenas",
@@ -148,7 +145,7 @@ def categorizar_publicamente(row) -> str:
         "pessoa com deficiencia", "pcd", "autista", "autistas",
         "deficiente", "deficiência", "deficiencia"
     ):
-        return "Capacitismos"
+        return "Capacitismo e deficiência"
 
     if tem(
         "futebol", "torcida", "torcedor", "torcedores", "estadio", "estádio",
@@ -157,15 +154,15 @@ def categorizar_publicamente(row) -> str:
         "teatro", "cinema", "samba", "funk", "rap", "hip hop",
         "cultura popular", "festa popular", "lazer popular"
     ):
-        return "Discriminação nos esportes, cultura e lazer"
+        return "Esporte, cultura e lazer com discriminação"
 
     if tem(
         "justiça", "justica", "tribunal", "stf", "stj",
         "direitos humanos", "ministério público", "ministerio publico",
         "projeto de lei", "política pública", "politica publica",
-        "ações afirmativas", "acoes afirmativas", "lei de cotas", "lei"
+        "ações afirmativas", "acoes afirmativas", "lei de cotas"
     ):
-        return "Direitos humanos, justiça e políticas públicas"
+        return "Direitos, justiça e políticas públicas"
 
     return "Estigma, exclusão e conflitos sociais"
 
@@ -187,8 +184,7 @@ with col_a:
     st.title("Agregador de notícias sobre preconceitos")
 with col_b:
     if st.button("Atualizar agora", key="btn_atualizar_agregador"):
-        if "noticia_id_aberta" in st.session_state:
-            st.session_state.noticia_id_aberta = None
+        st.session_state.noticia_id_aberta = None
         st.cache_data.clear()
         st.rerun()
 
@@ -212,25 +208,19 @@ m1.metric("Notícias", total_noticias)
 m2.metric("Entidades", total_entidades)
 m3.metric("Última coleta (Brasil)", data_mais_recente)
 
-# Layout base
-if total_noticias > 50:
-    QTD_COLUNAS = 4
-    CSS_PAD = "10px"
-    CSS_FONT_TITULO = "0.92rem"
-    CSS_FONT_TAG = "0.68rem"
-elif total_noticias > 20:
-    QTD_COLUNAS = 4
-    CSS_PAD = "12px"
-    CSS_FONT_TITULO = "0.98rem"
-    CSS_FONT_TAG = "0.75rem"
-else:
-    QTD_COLUNAS = 4
-    CSS_PAD = "15px"
-    CSS_FONT_TITULO = "1.05rem"
-    CSS_FONT_TAG = "0.8rem"
+QTD_COLUNAS = 3
+CSS_PAD = "12px"
+CSS_FONT_TITULO = "1.0rem"
+CSS_FONT_TAG = "0.74rem"
 
 css = f"""
 <style>
+.tile-wrap {{
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 14px;
+}}
+
 .tile-card {{
     background-color: #2b3a4a;
     color: white;
@@ -240,41 +230,61 @@ css = f"""
     margin-bottom: 0 !important;
     border-left: 5px solid transparent;
 }}
+
 .tile-body {{
     padding: {CSS_PAD};
+    min-height: 190px;
     display: flex;
     flex-direction: column;
+    gap: 10px;
 }}
+
 .fonte-tag {{
     font-size: {CSS_FONT_TAG};
     background: #1e2933;
-    padding: 4px 6px;
-    border-radius: 4px;
-    align-self: flex-start;
-    margin-bottom: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
     width: 100%;
     display: flex;
     justify-content: space-between;
+    align-items: center;
+}}
+
+.impact-bar {{
+    width: 100%;
+    height: 5px;
+    background: rgba(255,255,255,0.10);
+    border-radius: 999px;
+    overflow: hidden;
+}}
+
+.impact-bar-fill {{
+    height: 100%;
+    border-radius: 999px;
 }}
 
 .titulo-noticia {{
-    font-weight: bold;
+    font-weight: 700;
     font-size: {CSS_FONT_TITULO};
-    line-height: 1.3;
+    line-height: 1.35;
     display: -webkit-box;
-    -webkit-line-clamp: 7;
+    -webkit-line-clamp: 4;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    flex: 1;
+    min-height: calc(1.35em * 4);
 }}
+
 .data-tag {{
     font-size: {CSS_FONT_TAG};
-    color: #aaa;
+    color: #b7c0cc;
     margin-top: auto;
-    padding-top: 8px;
+    padding-top: 4px;
 }}
+
 div[data-testid="stButton"] > button.tile-open {{
     width: 100%;
-    min-height: 2.35rem;
+    min-height: 2.25rem;
     margin-top: 0 !important;
     margin-bottom: 14px !important;
     border-radius: 0 0 12px 12px;
@@ -283,24 +293,29 @@ div[data-testid="stButton"] > button.tile-open {{
     color: white;
     box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
 }}
+
 div[data-testid="stButton"] > button.tile-open:hover {{
     background: #4b6075;
     color: white;
 }}
+
 div[data-testid="stButton"] > button.tile-open p {{
     font-weight: 600;
 }}
+
 .overlay-meta {{
     color: #4b5563;
     font-size: 0.95rem;
     margin-bottom: 10px;
 }}
+
 .overlay-title {{
     font-size: 1.35rem;
     line-height: 1.35;
     font-weight: 700;
     margin-bottom: 14px;
 }}
+
 .overlay-badge {{
     display: inline-block;
     padding: 4px 8px;
@@ -311,6 +326,7 @@ div[data-testid="stButton"] > button.tile-open p {{
     margin-right: 6px;
     margin-bottom: 6px;
 }}
+
 .overlay-badge-tecnica {{
     display: inline-block;
     padding: 4px 8px;
@@ -337,27 +353,87 @@ else:
         score = 1 + sum(peso_entidades.get(e, 0) for e in ents)
         return max(1, int(score))
 
-    df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
-
-
     def altura_por_impacto(impacto: int) -> int:
-        if impacto >= 12:
-            return 270
-        if impacto >= 8:
-            return 235
-        if impacto >= 5:
-            return 205
-        if impacto >= 3:
-            return 180
-        return 150
+        return 190
 
-    df_noticias = df_noticias.sort_values(
+    df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
+    df_noticias["data_filtro"] = pd.to_datetime(df_noticias["data_coleta"], errors="coerce")
+
+    if not df_noticias["data_filtro"].isna().all():
+        if getattr(df_noticias["data_filtro"].dt, "tz", None) is None:
+            df_noticias["data_filtro"] = df_noticias["data_filtro"].dt.tz_localize("UTC")
+        df_noticias["data_filtro"] = df_noticias["data_filtro"].dt.tz_convert(FUSO_BRASIL)
+
+    with st.expander("🔎 Filtros de exibição", expanded=True):
+        f1, f2, f3, f4 = st.columns([1.1, 1.2, 1.2, 0.8])
+
+        with f1:
+            filtro_periodo = st.selectbox(
+                "Período",
+                ["Últimos 7 dias", "Últimos 15 dias", "Últimos 30 dias", "Tudo"],
+                index=0,
+                key="filtro_periodo_cards"
+            )
+
+        with f2:
+            fontes_disponiveis_cards = sorted(
+                [x for x in df_noticias["fonte"].dropna().astype(str).unique().tolist() if x.strip()]
+            )
+            filtro_fontes_cards = st.multiselect(
+                "Portais",
+                options=fontes_disponiveis_cards,
+                default=[],
+                key="filtro_fontes_cards"
+            )
+
+        with f3:
+            categorias_disponiveis = sorted(
+                [x for x in df_noticias["categoria_publica"].dropna().astype(str).unique().tolist() if x.strip()]
+            )
+            filtro_categorias = st.multiselect(
+                "Categorias públicas",
+                options=categorias_disponiveis,
+                default=[],
+                key="filtro_categorias_cards"
+            )
+
+        with f4:
+            limite_exibicao = st.selectbox(
+                "Quantidade",
+                [30, 60, 90, 120],
+                index=1,
+                key="limite_exibicao_cards"
+            )
+
+    df_cards = df_noticias.copy()
+
+    if filtro_periodo != "Tudo" and not df_cards["data_filtro"].isna().all():
+        agora_br = pd.Timestamp.now(tz=FUSO_BRASIL)
+        dias_map = {
+            "Últimos 7 dias": 7,
+            "Últimos 15 dias": 15,
+            "Últimos 30 dias": 30,
+        }
+        dias = dias_map.get(filtro_periodo)
+        if dias is not None:
+            limite_data = agora_br - pd.Timedelta(days=dias)
+            df_cards = df_cards[df_cards["data_filtro"] >= limite_data]
+
+    if filtro_fontes_cards:
+        df_cards = df_cards[df_cards["fonte"].isin(filtro_fontes_cards)]
+
+    if filtro_categorias:
+        df_cards = df_cards[df_cards["categoria_publica"].isin(filtro_categorias)]
+
+    df_cards = df_cards.sort_values(
         by=["impacto", "data_coleta"],
         ascending=[False, False]
-    )
+    ).head(limite_exibicao)
+
+    st.caption(f"Exibindo {len(df_cards)} notícias no painel.")
 
     cols = st.columns(QTD_COLUNAS)
-    for pos, (_, row) in enumerate(df_noticias.iterrows()):
+    for pos, (_, row) in enumerate(df_cards.iterrows()):
         impacto_val = int(row["impacto"])
         altura = altura_por_impacto(impacto_val)
         cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
@@ -366,14 +442,23 @@ else:
         with cols[pos % QTD_COLUNAS]:
             st.markdown(
                 f"""
-                <div class="tile-card" style="border-left-color: {cor_borda};">
-                    <div class="tile-body" style="min-height: {altura}px;">
-                        <div class="fonte-tag">
-                            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%;">{safe_text(row['fonte'])}</span>
-                            <span style="color:#ffb020;flex-shrink:0;">🔥 {impacto_val}</span>
+                <div class="tile-wrap">
+                    <div class="tile-card" style="border-left-color: {cor_borda};">
+                        <div class="tile-body" style="min-height: {altura}px;">
+                            <div class="fonte-tag">
+                                <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">
+                                    {safe_text(row['fonte'])}
+                                </span>
+                                <span style="color:#ffb020;flex-shrink:0;">🔥 {impacto_val}</span>
+                            </div>
+
+                            <div class="impact-bar">
+                                <div class="impact-bar-fill" style="width:{min(100, impacto_val * 10)}%; background:{cor_borda};"></div>
+                            </div>
+
+                            <div class="titulo-noticia">{safe_text(row['titulo'])}</div>
+                            <div class="data-tag">{safe_text(row.get('data_coleta_fmt', row['data_coleta']))}</div>
                         </div>
-                        <div class="titulo-noticia">{safe_text(row['titulo'])}</div>
-                        <div class="data-tag">{safe_text(row.get('data_coleta_fmt', row['data_coleta']))}</div>
                     </div>
                 </div>
                 """,
@@ -534,7 +619,6 @@ else:
 
                 if modo_linha == "Linha única":
                     serie_tempo = preparar_serie_unica(df_tempo, freq_escolhida, granularidade)
-
                     fig_tempo = px.line(
                         serie_tempo,
                         x="data_str",
@@ -542,7 +626,6 @@ else:
                         markers=True,
                         title=f"Evolução temporal das notícias ({granularidade.lower()})"
                     )
-
                     tabela_exibicao = serie_tempo.copy()
 
                 elif modo_linha == "Por categoria pública":
@@ -553,7 +636,6 @@ else:
                         "Categoria pública",
                         granularidade
                     )
-
                     fig_tempo = px.line(
                         serie_tempo,
                         x="data_str",
@@ -562,7 +644,6 @@ else:
                         markers=True,
                         title=f"Evolução temporal por categoria pública ({granularidade.lower()})"
                     )
-
                     tabela_exibicao = serie_tempo.copy()
 
                 else:
@@ -573,7 +654,6 @@ else:
                         "Portal",
                         granularidade
                     )
-
                     fig_tempo = px.line(
                         serie_tempo,
                         x="data_str",
@@ -582,7 +662,6 @@ else:
                         markers=True,
                         title=f"Evolução temporal por portal ({granularidade.lower()})"
                     )
-
                     tabela_exibicao = serie_tempo.copy()
 
                 fig_tempo.update_layout(
@@ -621,8 +700,6 @@ else:
                     c3.metric("Total no período", total_periodo)
 
                 with st.expander("Ver tabela da série temporal"):
-                    tabela_exibicao = tabela_exibicao.copy()
-
                     if modo_linha == "Linha única":
                         st.dataframe(
                             tabela_exibicao[["data_str", "Quantidade"]].rename(columns={"data_str": "Data"}),
@@ -731,7 +808,9 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 except Exception:
                     pass
 
-            badges.append(f'<span class="overlay-badge-tecnica">impacto {int(row["impacto"])}</span>')
+            if "impacto" in row.index and pd.notna(row["impacto"]):
+                badges.append(f'<span class="overlay-badge-tecnica">impacto {int(row["impacto"])}</span>')
+
             st.markdown("".join(badges), unsafe_allow_html=True)
 
             texto_completo = None
