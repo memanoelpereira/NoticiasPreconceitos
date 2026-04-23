@@ -462,17 +462,10 @@ else:
                     <div class="tile-card" style="border-left-color: {cor_borda};">
                         <div class="tile-body" style="min-height: {altura}px;">
                             <div class="fonte-tag">
-                         with cols[pos % QTD_COLUNAS]:
-            st.markdown(
-                f"""
-                <div class="tile-wrap">
-                    <div class="tile-card" style="border-left-color: {cor_borda};">
-                        <div class="tile-body" style="min-height: {altura}px;">
-                            <div class="fonte-tag">
                                 <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">
                                     {safe_text(row['fonte'])}
                                 </span>
-                                <span style="color:#ffb020;flex-shrink:0;">🔥 {impacto_val}</span>
+                                <span style="color:#ffb020;flex-shrink:0;">&#128293; {impacto_val}</span>
                             </div>
 
                             <div class="impact-bar">
@@ -487,6 +480,7 @@ else:
                 """,
                 unsafe_allow_html=True
             )
+
             st.button(
                 "Acompanhar notícia",
                 key=f"abrir_{noticia_id}",
