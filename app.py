@@ -295,67 +295,231 @@ else:
 
     st.divider()
 
+    st.divider()
+
     with st.expander("🕒 Linha do tempo das notícias"):
         df_tempo = df_noticias.copy()
-        df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce")
-        df_tempo = df_tempo.dropna(subset=["data_plot"]).sort_values("data_plot")
+        df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce").dt.normalize()
+        df_tempo = df_tempo.dropna(subset=["data_plot"])
 
         if df_tempo.empty:
             st.info("Não há datas válidas para montar a linha do tempo.")
         else:
-            serie_tempo = (
-                df_tempo
-                .set_index("data_plot")
-                .resample("D")
-                .size()
-                .rename("Quantidade de notícias")
-                .reset_index()
-            )
+            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 2])
 
-            # evita “buracos” visuais muito grandes quando houver dias sem coleta
-            if not serie_tempo.empty:
-                intervalo_completo = pd.date_range(
-                    start=serie_tempo["data_plot"].min(),
-                    end=serie_tempo["data_plot"].max(),
-                    freq="D"
-                )
-                serie_tempo = (
-                    serie_tempo
-                    .set_index("data_plot")
-                    .reindex(intervalo_completo, fill_value=0)
-                    .rename_axis("data_plot")
-                    .reset_index()
+            with col_ctrl1:
+                granularidade = st.selectbox(
+                    "Granularidade",
+                    options=["Diária", "Semanal", "Mensal"],
+                    index=0,
+                    key="timeline_granularidade"
                 )
 
-            serie_tempo["Data"] = serie_tempo["data_plot"].dt.strftime("%Y-%m-%d")
-
-            fig_tempo = px.line(
-                serie_tempo,
-                x="data_plot",
-                y="Quantidade de notícias",
-                markers=True,
-                title="Evolução temporal das notícias coletadas"
-            )
-
-            fig_tempo.update_layout(
-                xaxis_title="Data",
-                yaxis_title="Número de notícias",
-                hovermode="x unified"
-            )
-
-            st.plotly_chart(fig_tempo, use_container_width=True)
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Dias com registro", int((serie_tempo["Quantidade de notícias"] > 0).sum()))
-            c2.metric("Pico diário", int(serie_tempo["Quantidade de notícias"].max()))
-            c3.metric("Total no período", int(serie_tempo["Quantidade de notícias"].sum()))
-
-            with st.expander("Ver tabela da série temporal"):
-                st.dataframe(
-                    serie_tempo[["Data", "Quantidade de notícias"]],
-                    use_container_width=True,
-                    hide_index=True
+            with col_ctrl2:
+                modo_linha = st.selectbox(
+                    "Modo",
+                    options=["Linha única", "Por classificação", "Por portal"],
+                    index=0,
+                    key="timeline_modo"
                 )
+
+            with col_ctrl3:
+                fontes_disponiveis = sorted([f for f in df_tempo["fonte"].dropna().unique().tolist() if str(f).strip()])
+                filtro_fontes = st.multiselect(
+                    "Filtrar portais",
+                    options=fontes_disponiveis,
+                    default=[],
+                    key="timeline_fontes"
+                )
+
+            if filtro_fontes:
+                df_tempo = df_tempo[df_tempo["fonte"].isin(filtro_fontes)]
+
+            if df_tempo.empty:
+                st.info("Os filtros atuais não retornaram notícias.")
+            else:
+                freq_map = {
+                    "Diária": "D",
+                    "Semanal": "W-MON",
+                    "Mensal": "MS"
+                }
+                freq_escolhida = freq_map[granularidade]
+
+                def preparar_serie_unica(df_base: pd.DataFrame, freq: str) -> pd.DataFrame:
+                    serie = (
+                        df_base
+                        .set_index("data_plot")
+                        .resample(freq)
+                        .size()
+                        .rename("Quantidade")
+                        .reset_index()
+                    )
+                    if not serie.empty:
+                        intervalo = pd.date_range(
+                            start=serie["data_plot"].min(),
+                            end=serie["data_plot"].max(),
+                            freq=freq
+                        )
+                        serie = (
+                            serie
+                            .set_index("data_plot")
+                            .reindex(intervalo, fill_value=0)
+                            .rename_axis("data_plot")
+                            .reset_index()
+                        )
+                    return serie
+
+                def preparar_serie_categoria(df_base: pd.DataFrame, freq: str, coluna: str, nome_coluna: str) -> pd.DataFrame:
+                    df_aux = df_base.copy()
+                    df_aux[coluna] = df_aux[coluna].fillna("Não informado").astype(str).str.strip()
+                    df_aux.loc[df_aux[coluna] == "", coluna] = "Não informado"
+
+                    serie = (
+                        df_aux
+                        .groupby([pd.Grouper(key="data_plot", freq=freq), coluna])
+                        .size()
+                        .reset_index(name="Quantidade")
+                        .rename(columns={coluna: nome_coluna})
+                    )
+
+                    if serie.empty:
+                        return serie
+
+                    categorias = sorted(serie[nome_coluna].dropna().unique().tolist())
+                    datas = pd.date_range(
+                        start=serie["data_plot"].min(),
+                        end=serie["data_plot"].max(),
+                        freq=freq
+                    )
+
+                    grade = pd.MultiIndex.from_product(
+                        [datas, categorias],
+                        names=["data_plot", nome_coluna]
+                    )
+
+                    serie = (
+                        serie
+                        .set_index(["data_plot", nome_coluna])
+                        .reindex(grade, fill_value=0)
+                        .reset_index()
+                    )
+                    return serie
+
+                if modo_linha == "Linha única":
+                    serie_tempo = preparar_serie_unica(df_tempo, freq_escolhida)
+
+                    fig_tempo = px.line(
+                        serie_tempo,
+                        x="data_plot",
+                        y="Quantidade",
+                        markers=True,
+                        title=f"Evolução temporal das notícias ({granularidade.lower()})"
+                    )
+
+                    tabela_exibicao = serie_tempo.copy()
+
+                elif modo_linha == "Por classificação":
+                    serie_tempo = preparar_serie_categoria(
+                        df_tempo,
+                        freq_escolhida,
+                        "classificacao",
+                        "Classificação"
+                    )
+
+                    fig_tempo = px.line(
+                        serie_tempo,
+                        x="data_plot",
+                        y="Quantidade",
+                        color="Classificação",
+                        markers=True,
+                        title=f"Evolução temporal por classificação ({granularidade.lower()})"
+                    )
+
+                    tabela_exibicao = serie_tempo.copy()
+
+                else:
+                    serie_tempo = preparar_serie_categoria(
+                        df_tempo,
+                        freq_escolhida,
+                        "fonte",
+                        "Portal"
+                    )
+
+                    fig_tempo = px.line(
+                        serie_tempo,
+                        x="data_plot",
+                        y="Quantidade",
+                        color="Portal",
+                        markers=True,
+                        title=f"Evolução temporal por portal ({granularidade.lower()})"
+                    )
+
+                    tabela_exibicao = serie_tempo.copy()
+
+                fig_tempo.update_layout(
+                    xaxis_title="Data",
+                    yaxis_title="Número de notícias",
+                    hovermode="x unified"
+                )
+
+                st.plotly_chart(fig_tempo, use_container_width=True)
+
+                if modo_linha == "Linha única":
+                    total_periodo = int(tabela_exibicao["Quantidade"].sum())
+                    pico = int(tabela_exibicao["Quantidade"].max()) if not tabela_exibicao.empty else 0
+                    periodos_com_registro = int((tabela_exibicao["Quantidade"] > 0).sum())
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Períodos com registro", periodos_com_registro)
+                    c2.metric("Pico no período", pico)
+                    c3.metric("Total no período", total_periodo)
+
+                else:
+                    total_periodo = int(tabela_exibicao["Quantidade"].sum())
+                    pico = int(tabela_exibicao["Quantidade"].max()) if not tabela_exibicao.empty else 0
+                    n_series = int(tabela_exibicao.iloc[:, 1].nunique()) if not tabela_exibicao.empty else 0
+
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Séries exibidas", n_series)
+                    c2.metric("Pico em uma série", pico)
+                    c3.metric("Total no período", total_periodo)
+
+                with st.expander("Ver tabela da série temporal"):
+                    tabela_exibicao = tabela_exibicao.copy()
+                    tabela_exibicao["Data"] = pd.to_datetime(tabela_exibicao["data_plot"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+                    if modo_linha == "Linha única":
+                        st.dataframe(
+                            tabela_exibicao[["Data", "Quantidade"]],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    elif modo_linha == "Por classificação":
+                        st.dataframe(
+                            tabela_exibicao[["Data", "Classificação", "Quantidade"]],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.dataframe(
+                            tabela_exibicao[["Data", "Portal", "Quantidade"]],
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
+    with st.expander("📊 Estatística dos Portais"):
+        stats_fonte = df_noticias["fonte"].value_counts().reset_index()
+        stats_fonte.columns = ["Portal", "Quantidade"]
+        fig = px.bar(stats_fonte, x="Portal", y="Quantidade", title="Volume de Notícias Relevantes por Fonte")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("🎯 Temas e Personagens (NER)"):
+        if not df_entidades.empty:
+            stats_temas = df_entidades["texto"].value_counts().head(20).reset_index()
+            stats_temas.columns = ["Entidade", "Frequência"]
+            fig2 = px.bar(stats_temas, y="Entidade", x="Frequência", orientation="h", title="Top 20 Entidades mais Frequentes")
+            fig2.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig2, use_container_width=True)
 
     with st.expander("📊 Estatística dos Portais"):
         stats_fonte = df_noticias["fonte"].value_counts().reset_index()
