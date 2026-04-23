@@ -365,28 +365,27 @@ else:
         df_noticias["data_filtro"] = df_noticias["data_filtro"].dt.tz_convert(FUSO_BRASIL)
 
     with st.expander("🔎 Filtros de exibição", expanded=True):
-        f1, f2, f3, f4 = st.columns([1.1, 1.2, 1.2, 0.8])
+        f1, f2, f3, f4 = st.columns([1.1, 1.2, 0.8, 1.2])
+
+        total_registros = int(len(df_noticias))
+
+        opcoes_quantidade = [30, 60, 90, 120]
+        opcoes_quantidade = [x for x in opcoes_quantidade if x < total_registros]
+
+        if total_registros not in opcoes_quantidade:
+            opcoes_quantidade.append(total_registros)
+
+        opcoes_quantidade = sorted(set([x for x in opcoes_quantidade if x > 0]))
 
         with f1:
             filtro_periodo = st.selectbox(
                 "Período",
                 ["Últimos 7 dias", "Últimos 15 dias", "Últimos 30 dias", "Tudo"],
-                index=0,
+                index=2,
                 key="filtro_periodo_cards"
             )
 
         with f2:
-            fontes_disponiveis_cards = sorted(
-                [x for x in df_noticias["fonte"].dropna().astype(str).unique().tolist() if x.strip()]
-            )
-            filtro_fontes_cards = st.multiselect(
-                "Portais",
-                options=fontes_disponiveis_cards,
-                default=[],
-                key="filtro_fontes_cards"
-            )
-
-        with f3:
             categorias_disponiveis = sorted(
                 [x for x in df_noticias["categoria_publica"].dropna().astype(str).unique().tolist() if x.strip()]
             )
@@ -394,15 +393,32 @@ else:
                 "Categorias públicas",
                 options=categorias_disponiveis,
                 default=[],
-                key="filtro_categorias_cards"
+                key="filtro_categorias_cards",
+                placeholder="Selecione categorias"
+            )
+
+        with f3:
+            limite_padrao = total_registros if total_registros <= 120 else 120
+            index_limite = opcoes_quantidade.index(limite_padrao) if limite_padrao in opcoes_quantidade else len(
+                opcoes_quantidade) - 1
+
+            limite_exibicao = st.selectbox(
+                "Quantidade",
+                opcoes_quantidade,
+                index=index_limite,
+                key="limite_exibicao_cards"
             )
 
         with f4:
-            limite_exibicao = st.selectbox(
-                "Quantidade",
-                [30, 60, 90, 120],
-                index=1,
-                key="limite_exibicao_cards"
+            fontes_disponiveis_cards = sorted(
+                [x for x in df_noticias["fonte"].dropna().astype(str).unique().tolist() if x.strip()]
+            )
+            filtro_fontes_cards = st.multiselect(
+                "Portais",
+                options=fontes_disponiveis_cards,
+                default=[],
+                key="filtro_fontes_cards",
+                placeholder="Selecione portais"
             )
 
     df_cards = df_noticias.copy()
@@ -430,7 +446,7 @@ else:
         ascending=[False, False]
     ).head(limite_exibicao)
 
-    st.caption(f"Exibindo {len(df_cards)} notícias no painel.")
+    st.caption(f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias disponíveis no banco.")
 
     cols = st.columns(QTD_COLUNAS)
     for pos, (_, row) in enumerate(df_cards.iterrows()):
@@ -440,6 +456,13 @@ else:
         noticia_id = int(row["id"])
 
         with cols[pos % QTD_COLUNAS]:
+            st.markdown(
+                f"""
+                <div class="tile-wrap">
+                    <div class="tile-card" style="border-left-color: {cor_borda};">
+                        <div class="tile-body" style="min-height: {altura}px;">
+                            <div class="fonte-tag">
+                         with cols[pos % QTD_COLUNAS]:
             st.markdown(
                 f"""
                 <div class="tile-wrap">
