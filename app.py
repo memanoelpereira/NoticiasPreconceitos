@@ -1440,11 +1440,11 @@ else:
                                 hide_index=True
                             )
                         elif modo_linha == "Por categorias":
-                        st.dataframe(
-                            tabela_exibicao[["data_str", "Categoria pública", "Quantidade"]].rename(columns={"data_str": "Data"}),
-                            use_container_width=True,
-                            hide_index=True
-                        )
+                            st.dataframe(
+                                tabela_exibicao[["data_str", "Categoria pública", "Quantidade"]].rename(columns={"data_str": "Data"}),
+                                use_container_width=True,
+                                hide_index=True
+                            )
                         else:
                             st.dataframe(
                                 tabela_exibicao[["data_str", "Portal", "Quantidade"]].rename(columns={"data_str": "Data"}),
