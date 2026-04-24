@@ -598,10 +598,7 @@ div[data-testid="stButton"] > button.botao-fechar-noticia:hover {
     color: white;
     border: 1px solid #7f1d1d;
 }
-div[data-testid="stButton"] > button[kind="primary"] {
-    font-weight: 700;
-    border-radius: 10px;
-}
+
 div[data-testid="stButton"] > button[kind="primary"] {
     font-weight: 700;
     border-radius: 10px;
@@ -1100,7 +1097,13 @@ else:
             with col_ctrl2:
                 modo_linha = st.selectbox(
                     "Modo",
-                    options=["Linha única", "Por categorias", "Por portal", "Alertas adaptativos", "Alertas por categorias"],
+                    options=[
+                        "Linha única",
+                        "Por categorias",
+                        "Por portal",
+                        "Alertas adaptativos",
+                        "Alertas por categorias"
+                    ],
                     index=0,
                     key="timeline_modo"
                 )
@@ -1172,7 +1175,7 @@ else:
                                     hide_index=True
                                 )
 
-                elif modo_linha == "Alertas por categoris":
+                elif modo_linha == "Alertas por categorias":
                     if granularidade != "Diária":
                         st.info("Os alertas por categoria estão habilitados apenas para a granularidade diária.")
                     else:
@@ -1359,7 +1362,8 @@ else:
                         )
                         tabela_exibicao = serie_tempo.copy()
 
-                    elif modo_linha == "Por categoria pública":
+
+                    elif modo_linha == "Por categorias":
                         serie_tempo = preparar_serie_categoria(
                             df_tempo,
                             freq_escolhida,
@@ -1435,7 +1439,7 @@ else:
                                 use_container_width=True,
                                 hide_index=True
                             )
-                        elif modo_linha == "Por categoria pública":
+                            elif modo_linha == "Por categorias":
                             st.dataframe(
                                 tabela_exibicao[["data_str", "Categoria pública", "Quantidade"]].rename(columns={"data_str": "Data"}),
                                 use_container_width=True,
