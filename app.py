@@ -9,6 +9,8 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 import re
+import hashlib
+import unicodedata
 
 
 FUSO_BRASIL = "America/Sao_Paulo"
@@ -342,20 +344,67 @@ def classificar_enquadramentos(row) -> str:
     return classificar_por_dicionario(texto, DICIONARIOS_ENQUADRAMENTO, fallback="Enquadramento não identificado")
 
 
+def _serie_texto_valida(s: pd.Series) -> pd.Series:
+    """True quando a célula tem conteúdo útil, sem tratar 'None'/'nan' como texto válido."""
+    if s is None:
+        return pd.Series(dtype=bool)
+    return (
+        s.notna()
+        & s.astype(str).str.strip().ne("")
+        & ~s.astype(str).str.strip().str.lower().isin(["none", "nan", "nat", "null"])
+    )
+
+
+def _preencher_coluna_por_fallback(out: pd.DataFrame, coluna: str, valores_fallback) -> pd.DataFrame:
+    """Preserva a coluna vinda do banco e preenche apenas vazios com fallback local."""
+    fallback = valores_fallback
+    if not isinstance(fallback, pd.Series):
+        fallback = pd.Series(fallback, index=out.index)
+    if coluna not in out.columns:
+        out[coluna] = fallback
+    else:
+        mask = ~_serie_texto_valida(out[coluna])
+        out.loc[mask, coluna] = fallback.loc[mask]
+    return out
+
+
 def enriquecer_dataframe_analitico(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Enriquece o DataFrame para visualização sem apagar o que já veio do pipeline.
+
+    O pipeline é a fonte principal das novas colunas. O Streamlit só calcula fallback
+    para registros antigos ou para bancos que ainda não receberam backfill.
+    """
     if df.empty:
         return df
     out = df.copy()
+
     if "fonte" in out.columns:
-        out["tipo_fonte"] = out["fonte"].apply(inferir_tipo_fonte)
-        out["regiao_fonte"] = out["fonte"].apply(inferir_regiao_fonte)
+        out = _preencher_coluna_por_fallback(out, "tipo_fonte", out["fonte"].apply(inferir_tipo_fonte))
+        out = _preencher_coluna_por_fallback(out, "regiao_fonte", out["fonte"].apply(inferir_regiao_fonte))
         out["peso_tipo_fonte"] = out["tipo_fonte"].map(PESO_TIPO_FONTE).fillna(1.0)
     else:
-        out["tipo_fonte"] = "outra"
-        out["regiao_fonte"] = "Não informado"
+        out = _preencher_coluna_por_fallback(out, "tipo_fonte", pd.Series("outra", index=out.index))
+        out = _preencher_coluna_por_fallback(out, "regiao_fonte", pd.Series("Não informado", index=out.index))
         out["peso_tipo_fonte"] = 1.0
-    out["eixos_preconceito"] = out.apply(classificar_eixos_preconceito, axis=1)
-    out["enquadramentos"] = out.apply(classificar_enquadramentos, axis=1)
+
+    if "eixos_analiticos" in out.columns:
+        out = _preencher_coluna_por_fallback(out, "eixos_preconceito", out["eixos_analiticos"].fillna(""))
+        out = _preencher_coluna_por_fallback(out, "eixos_analiticos", out.get("eixos_preconceito", pd.Series("", index=out.index)))
+    else:
+        fallback_eixos = out.apply(classificar_eixos_preconceito, axis=1)
+        out = _preencher_coluna_por_fallback(out, "eixos_preconceito", fallback_eixos)
+        out = _preencher_coluna_por_fallback(out, "eixos_analiticos", out["eixos_preconceito"])
+
+    fallback_enq = out.apply(classificar_enquadramentos, axis=1)
+    out = _preencher_coluna_por_fallback(out, "enquadramentos", fallback_enq)
+
+    if "categoria_publica" not in out.columns:
+        out["categoria_publica"] = out.apply(categorizar_publicamente, axis=1)
+    else:
+        fallback_cat = out.apply(categorizar_publicamente, axis=1)
+        out = _preencher_coluna_por_fallback(out, "categoria_publica", fallback_cat)
+
     return out
 
 
@@ -416,6 +465,126 @@ def gerar_sintese_rodada(df: pd.DataFrame) -> str:
         f"O eixo temático mais recorrente é '{eixo_top}' e o enquadramento mais frequente é '{enquad_top}'. "
         f"O índice HHI por fonte é {hhi_txt}, indicando {interpretar_hhi(hhi)} da coleta."
     )
+
+
+# ============================================================
+# Camada notícia/caso — visualização leve a partir de colunas do pipeline
+# ============================================================
+
+STOPWORDS_CASO = {
+    "para", "como", "com", "uma", "uns", "das", "dos", "nas", "nos", "pela", "pelo",
+    "sobre", "apos", "após", "contra", "entre", "mais", "menos", "sera", "será", "sao",
+    "são", "foi", "ter", "tem", "que", "por", "em", "de", "do", "da", "a", "o", "e",
+    "no", "na", "ao", "aos", "as", "os", "se", "sem", "seu", "sua", "seus", "suas",
+    "brasil", "noticias", "notícia", "noticia", "diz", "dizem", "novo", "nova"
+}
+
+def normalizar_para_caso(texto: str) -> str:
+    s = str(texto or "").lower().strip()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    return " ".join(s.split())
+
+def extrair_chave_lexical_caso(texto: str, n: int = 10) -> str:
+    texto_norm = normalizar_para_caso(texto)
+    palavras = [p for p in texto_norm.split() if len(p) >= 4 and p not in STOPWORDS_CASO]
+    vistas = []
+    for p in palavras:
+        if p not in vistas:
+            vistas.append(p)
+        if len(vistas) >= n:
+            break
+    return "_".join(vistas) if vistas else hashlib.md5(texto_norm.encode("utf-8")).hexdigest()[:10]
+
+def _data_base_caso(row) -> str:
+    for col in ["data_publicacao", "data_coleta"]:
+        if col in row.index:
+            ts = pd.to_datetime(row.get(col), errors="coerce")
+            if pd.notna(ts):
+                try:
+                    if getattr(ts, "tzinfo", None) is None:
+                        ts = ts.tz_localize("UTC")
+                    ts = ts.tz_convert(FUSO_BRASIL)
+                except Exception:
+                    pass
+                return ts.strftime("%Y-%m-%d")
+    return "sem_data"
+
+def gerar_caso_id_fallback(row) -> str:
+    categoria = normalizar_para_caso(row.get("categoria_publica", "sem_categoria"))[:60]
+    data_ref = _data_base_caso(row)
+    texto = f"{row.get('titulo', '')} {row.get('resumo', '')}"
+    chave = extrair_chave_lexical_caso(texto, n=8)
+    bruto = f"{categoria}__{data_ref}__{chave}"
+    if len(bruto) > 180:
+        bruto = f"{categoria}__{data_ref}__{hashlib.md5(bruto.encode('utf-8')).hexdigest()[:12]}"
+    return bruto
+
+def garantir_caso_id(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    fallback = out.apply(gerar_caso_id_fallback, axis=1)
+    if "caso_id" not in out.columns:
+        out["caso_id"] = fallback
+    else:
+        mask = ~_serie_texto_valida(out["caso_id"])
+        out.loc[mask, "caso_id"] = fallback.loc[mask]
+    if "similaridade_caso" not in out.columns:
+        out["similaridade_caso"] = np.where(out["caso_id"].astype(str).str.len() > 0, 1.0, np.nan)
+    return out
+
+def _unicos_join(valores, limite: int = 8) -> str:
+    vals = [str(v).strip() for v in valores if pd.notna(v) and str(v).strip()]
+    unicos = sorted(set(vals))
+    if len(unicos) > limite:
+        return ", ".join(unicos[:limite]) + f" +{len(unicos) - limite}"
+    return ", ".join(unicos)
+
+def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
+    if df_noticias_base.empty:
+        return pd.DataFrame()
+    base = garantir_caso_id(df_noticias_base).copy()
+    if "impacto" not in base.columns:
+        base["impacto"] = 1
+    if "impacto_ponderado" not in base.columns:
+        base["impacto_ponderado"] = base["impacto"]
+    if "data_publicacao" not in base.columns:
+        base["data_publicacao"] = pd.NaT
+    ordenada = base.sort_values(["impacto", "data_coleta"], ascending=[False, False]).copy()
+    rep = ordenada.groupby("caso_id", as_index=False).first()
+    agg = base.groupby("caso_id", as_index=False).agg(
+        n_noticias=("id", "count"),
+        n_fontes=("fonte", lambda x: len(set([str(v).strip() for v in x if pd.notna(v) and str(v).strip()]))),
+        fontes=("fonte", _unicos_join),
+        ids_noticias=("id", lambda x: ", ".join(str(int(v)) for v in x if pd.notna(v))),
+        primeira_coleta=("data_coleta", "min"),
+        ultima_coleta=("data_coleta", "max"),
+        data_publicacao_min=("data_publicacao", "min"),
+        data_publicacao_max=("data_publicacao", "max"),
+        impacto_total=("impacto", "sum"),
+        impacto_ponderado_total=("impacto_ponderado", "sum"),
+    )
+    cols_rep = [
+        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao", "url_fonte",
+        "categoria_publica", "eixos_preconceito", "eixos_analiticos", "enquadramentos",
+        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro", "score_relevancia",
+        "similaridade_caso", "resumo"
+    ]
+    cols_rep = [c for c in cols_rep if c in rep.columns]
+    rep = rep[cols_rep].rename(columns={
+        "id": "noticia_representativa_id",
+        "titulo": "titulo_representativo",
+        "fonte": "fonte_representativa",
+        "data_coleta": "data_coleta_representativa",
+        "data_publicacao": "data_publicacao_representativa",
+        "url_fonte": "url_representativa",
+        "resumo": "resumo_representativo",
+    })
+    casos = agg.merge(rep, on="caso_id", how="left")
+    casos["data_referencia"] = casos["data_publicacao_min"].fillna(casos["primeira_coleta"])
+    return casos.sort_values(["impacto_total", "ultima_coleta"], ascending=[False, False]).reset_index(drop=True)
 
 def aplicar_busca_textual(df: pd.DataFrame, consulta: str) -> pd.DataFrame:
     consulta = (consulta or "").strip().lower()
@@ -691,14 +860,20 @@ def plotar_alertas_adaptativos_categoria(df_alerta: pd.DataFrame, meta: dict, ti
 
 if "noticia_id_aberta" not in st.session_state:
     st.session_state.noticia_id_aberta = None
-
+if "caso_id_aberto" not in st.session_state:
+    st.session_state.caso_id_aberto = None
 
 def abrir_noticia(noticia_id: int):
     st.session_state.noticia_id_aberta = noticia_id
+    st.session_state.caso_id_aberto = None
 
+def abrir_caso(noticia_id: int, caso_id: str):
+    st.session_state.noticia_id_aberta = noticia_id
+    st.session_state.caso_id_aberto = caso_id
 
 def fechar_noticia():
     st.session_state.noticia_id_aberta = None
+    st.session_state.caso_id_aberto = None
 
 
 css = """
@@ -854,9 +1029,11 @@ if erro_db:
 
 if not df_noticias.empty and "data_coleta" in df_noticias.columns:
     df_noticias["data_coleta_fmt"] = df_noticias["data_coleta"].apply(formatar_data_curta)
+    if "data_publicacao" in df_noticias.columns:
+        df_noticias["data_publicacao_fmt"] = df_noticias["data_publicacao"].apply(formatar_data_curta)
     data_mais_recente = formatar_data_curta(df_noticias["data_coleta"].max())
-    df_noticias["categoria_publica"] = df_noticias.apply(categorizar_publicamente, axis=1)
     df_noticias = enriquecer_dataframe_analitico(df_noticias)
+    df_noticias = garantir_caso_id(df_noticias)
 else:
     data_mais_recente = "—"
 
@@ -1034,7 +1211,9 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
 
             with st.expander("Mostrar metadados"):
                 meta_cols = [
-                    "id", "fonte", "data_coleta", "categoria_publica",
+                    "id", "fonte", "data_publicacao", "data_coleta", "categoria_publica",
+                    "eixos_analiticos", "eixos_preconceito", "enquadramentos",
+                    "caso_id", "similaridade_caso", "tipo_fonte", "regiao_fonte",
                     "classificacao", "criterio_filtro", "score_relevancia",
                     "url_fonte", "resumo"
                 ]
@@ -1042,7 +1221,7 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                 for col in meta_cols:
                     if col in row_topo.index:
                         value = row_topo[col]
-                        if col == "data_coleta" and not pd.isna(value):
+                        if col in ["data_coleta", "data_publicacao"] and not pd.isna(value):
                             meta[col] = formatar_data_curta(value)
                         else:
                             meta[col] = "—" if pd.isna(value) else value
@@ -1060,6 +1239,20 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                     )
                 else:
                     st.write("Nenhuma entidade extraída para este item.")
+
+                if st.session_state.get("caso_id_aberto"):
+                    st.markdown("**Notícias agrupadas neste caso**")
+                    caso_atual = str(st.session_state.caso_id_aberto)
+                    noticias_do_caso = df_noticias[df_noticias.get("caso_id", pd.Series(dtype=str)).astype(str) == caso_atual].copy()
+                    if not noticias_do_caso.empty:
+                        cols_caso = [c for c in ["id", "fonte", "data_publicacao", "data_coleta", "titulo", "url_fonte"] if c in noticias_do_caso.columns]
+                        st.dataframe(
+                            noticias_do_caso[cols_caso].sort_values("data_coleta", ascending=False),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.write("Nenhuma outra notícia foi localizada para este caso no recorte atual.")
 
             st.markdown("---")
             st.markdown('<div style="display:flex;justify-content:flex-end;">', unsafe_allow_html=True)
@@ -1127,6 +1320,18 @@ else:
         df_noticias["data_filtro"] = df_noticias["data_filtro"].dt.tz_convert(FUSO_BRASIL)
 
     with st.expander("🔎 Filtros de exibição", expanded=True):
+        modo_visualizacao = st.radio(
+            "Camada visual",
+            options=["Por notícia", "Por caso"],
+            index=0,
+            horizontal=True,
+            key="modo_visualizacao_cards",
+            help=(
+                "Por notícia mantém todas as matérias capturadas, inclusive repetidas. "
+                "Por caso agrupa matérias semelhantes pelo caso_id gerado no pipeline ou, para registros antigos, por fallback local."
+            )
+        )
+
         f1, f2, f3, f4, f5 = st.columns([1.1, 1.4, 1.2, 0.8, 1.2])
 
         total_registros = int(len(df_noticias))
@@ -1252,84 +1457,181 @@ else:
     if filtro_tipo_fonte_cards and "tipo_fonte" in df_cards.columns:
         df_cards = df_cards[df_cards["tipo_fonte"].isin(filtro_tipo_fonte_cards)]
 
-    df_cards_filtrado_sem_limite = df_cards.copy()
+    df_noticias_filtrado_sem_limite = df_cards.copy()
+    df_casos_filtrado_sem_limite = construir_df_casos(df_noticias_filtrado_sem_limite)
 
-    df_cards = df_cards.sort_values(
-        by=["impacto", "data_coleta"],
-        ascending=[False, False]
-    ).head(limite_exibicao)
+    if modo_visualizacao == "Por caso":
+        df_cards = df_casos_filtrado_sem_limite.sort_values(
+            by=["impacto_total", "ultima_coleta"],
+            ascending=[False, False]
+        ).head(limite_exibicao)
+        unidade_exibida = "casos"
+        total_unidade_filtrada = len(df_casos_filtrado_sem_limite)
+    else:
+        df_cards = df_noticias_filtrado_sem_limite.sort_values(
+            by=["impacto", "data_coleta"],
+            ascending=[False, False]
+        ).head(limite_exibicao)
+        unidade_exibida = "notícias"
+        total_unidade_filtrada = len(df_noticias_filtrado_sem_limite)
 
     if busca_textual.strip():
         st.caption(
-            f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
+            f"Exibindo {len(df_cards)} de {total_unidade_filtrada} {unidade_exibida} no recorte filtrado. "
             f"Busca ativa: “{busca_textual.strip()}”. O banco completo tem {total_banco} registros."
         )
     else:
         st.caption(
-            f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
+            f"Exibindo {len(df_cards)} de {total_unidade_filtrada} {unidade_exibida} no recorte filtrado. "
             f"O banco completo tem {total_banco} registros."
         )
 
+    if not df_casos_filtrado_sem_limite.empty:
+        ccam1, ccam2, ccam3, ccam4 = st.columns(4)
+        ccam1.metric("Notícias filtradas", len(df_noticias_filtrado_sem_limite))
+        ccam2.metric("Casos estimados", len(df_casos_filtrado_sem_limite))
+        ccam3.metric("Média notícias/caso", round(len(df_noticias_filtrado_sem_limite) / max(len(df_casos_filtrado_sem_limite), 1), 2))
+        ccam4.metric("Maior repercussão", int(df_casos_filtrado_sem_limite["n_noticias"].max()))
+
     with st.expander("⬇️ Exportar recorte filtrado", expanded=False):
-        st.caption("Exporta o recorte após filtros de período, busca, categoria, eixo, enquadramento, portal e tipo de fonte, antes do limite visual dos cards.")
-        colunas_export = [
-            c for c in [
-                "id", "data_coleta", "fonte", "tipo_fonte", "regiao_fonte", "titulo", "url_fonte",
-                "categoria_publica", "eixos_preconceito", "enquadramentos", "classificacao",
-                "criterio_filtro", "score_relevancia", "impacto", "impacto_ponderado", "resumo"
-            ] if c in df_cards_filtrado_sem_limite.columns
-        ]
-        df_export = df_cards_filtrado_sem_limite[colunas_export].copy() if colunas_export else df_cards_filtrado_sem_limite.copy()
-        st.download_button(
-            "Baixar CSV do recorte filtrado",
-            data=df_export.to_csv(index=False).encode("utf-8-sig"),
-            file_name="recorte_observatorio_preconceitos.csv",
-            mime="text/csv",
-            use_container_width=True
+        st.caption(
+            "Exporta o recorte após filtros de período, busca, categoria, eixo, enquadramento, portal e tipo de fonte, "
+            "antes do limite visual dos cards. As colunas novas vindas do pipeline são preservadas quando existem no banco."
         )
-        st.dataframe(df_export.head(100), use_container_width=True, hide_index=True)
+
+        colunas_export_noticias = [
+            c for c in [
+                "id", "data_publicacao", "data_coleta", "fonte", "tipo_fonte", "regiao_fonte",
+                "titulo", "url_fonte", "categoria_publica", "eixos_analiticos", "eixos_preconceito",
+                "enquadramentos", "caso_id", "similaridade_caso", "classificacao", "criterio_filtro",
+                "score_relevancia", "impacto", "impacto_ponderado", "resumo", "texto_completo"
+            ] if c in df_noticias_filtrado_sem_limite.columns
+        ]
+        df_export_noticias = (
+            df_noticias_filtrado_sem_limite[colunas_export_noticias].copy()
+            if colunas_export_noticias else df_noticias_filtrado_sem_limite.copy()
+        )
+
+        colunas_export_casos = [
+            c for c in [
+                "caso_id", "titulo_representativo", "categoria_publica", "eixos_analiticos",
+                "eixos_preconceito", "enquadramentos", "n_noticias", "n_fontes", "fontes",
+                "ids_noticias", "noticia_representativa_id", "fonte_representativa",
+                "data_publicacao_min", "data_publicacao_max", "primeira_coleta", "ultima_coleta",
+                "impacto_total", "impacto_ponderado_total", "similaridade_caso", "url_representativa",
+                "resumo_representativo"
+            ] if c in df_casos_filtrado_sem_limite.columns
+        ]
+        df_export_casos = (
+            df_casos_filtrado_sem_limite[colunas_export_casos].copy()
+            if colunas_export_casos else df_casos_filtrado_sem_limite.copy()
+        )
+
+        e1, e2 = st.columns(2)
+        with e1:
+            st.download_button(
+                "Baixar CSV por notícia",
+                data=df_export_noticias.to_csv(index=False).encode("utf-8-sig"),
+                file_name="recorte_por_noticia_observatorio_preconceitos.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with e2:
+            st.download_button(
+                "Baixar CSV por caso",
+                data=df_export_casos.to_csv(index=False).encode("utf-8-sig"),
+                file_name="recorte_por_caso_observatorio_preconceitos.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        aba_exp_noticia, aba_exp_caso = st.tabs(["Prévia por notícia", "Prévia por caso"])
+        with aba_exp_noticia:
+            st.dataframe(df_export_noticias.head(100), use_container_width=True, hide_index=True)
+        with aba_exp_caso:
+            st.dataframe(df_export_casos.head(100), use_container_width=True, hide_index=True)
 
     QTD_COLUNAS = 3
     cols = st.columns(QTD_COLUNAS)
 
-    for pos, (_, row) in enumerate(df_cards.iterrows()):
-        impacto_val = int(row["impacto"])
-        cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
-        noticia_id = int(row["id"])
-        largura_impacto = min(100, impacto_val * 10)
+    if modo_visualizacao == "Por caso":
+        for pos, (_, row) in enumerate(df_cards.iterrows()):
+            impacto_val = int(row.get("impacto_total", row.get("n_noticias", 1)) or 1)
+            cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
+            noticia_id = int(row.get("noticia_representativa_id"))
+            caso_id = str(row.get("caso_id", ""))
+            largura_impacto = min(100, impacto_val * 10)
+            n_noticias = int(row.get("n_noticias", 1) or 1)
+            n_fontes = int(row.get("n_fontes", 1) or 1)
+            data_ref = row.get("data_publicacao_min", None)
+            if pd.isna(pd.to_datetime(data_ref, errors="coerce")):
+                data_ref = row.get("primeira_coleta", None)
 
-        with cols[pos % QTD_COLUNAS]:
-            st.markdown(
-                f"""
-                <div class="card-shell" style="border-left:5px solid {cor_borda};">
-                    <div class="card-top">
-                        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">{safe_text(row['fonte'])}</span>
-                        <span style="color:#ffb020;flex-shrink:0;">&#128293; {impacto_val}</span>
+            with cols[pos % QTD_COLUNAS]:
+                st.markdown(
+                    f"""
+                    <div class="card-shell" style="border-left:5px solid {cor_borda};">
+                        <div class="card-top">
+                            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">Caso · {safe_text(row.get('categoria_publica', '—'))}</span>
+                            <span style="color:#ffb020;flex-shrink:0;">&#128293; {impacto_val}</span>
+                        </div>
+                        <div class="card-impact-track">
+                            <div style="width:{largura_impacto}%;height:5px;background:{cor_borda};border-radius:999px;"></div>
+                        </div>
+                        <div class="card-title">{safe_text(row.get('titulo_representativo', '—'))}</div>
+                        <div class="card-date">{n_noticias} notícia(s) · {n_fontes} fonte(s) · {safe_text(formatar_data_curta(data_ref))}</div>
                     </div>
-                    <div class="card-impact-track">
-                        <div style="width:{largura_impacto}%;height:5px;background:{cor_borda};border-radius:999px;"></div>
-                    </div>
-                    <div class="card-title">{safe_text(row['titulo'])}</div>
-                    <div class="card-date">{safe_text(row.get('data_coleta_fmt', row['data_coleta']))}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                    """,
+                    unsafe_allow_html=True
+                )
 
-            st.button(
-                "Acompanhar notícia",
-                key=f"abrir_{noticia_id}",
-                on_click=abrir_noticia,
-                args=(noticia_id,),
-                type="secondary"
-            )
+                st.button(
+                    "Acompanhar caso",
+                    key=f"abrir_caso_{pos}_{noticia_id}",
+                    on_click=abrir_caso,
+                    args=(noticia_id, caso_id),
+                    type="secondary"
+                )
+    else:
+        for pos, (_, row) in enumerate(df_cards.iterrows()):
+            impacto_val = int(row["impacto"])
+            cor_borda = "#ff4b4b" if impacto_val >= 8 else "#ffb020" if impacto_val >= 4 else "#00d4ff"
+            noticia_id = int(row["id"])
+            largura_impacto = min(100, impacto_val * 10)
+            data_card = row.get("data_publicacao_fmt") if row.get("data_publicacao_fmt", "—") != "—" else row.get("data_coleta_fmt", row["data_coleta"])
+
+            with cols[pos % QTD_COLUNAS]:
+                st.markdown(
+                    f"""
+                    <div class="card-shell" style="border-left:5px solid {cor_borda};">
+                        <div class="card-top">
+                            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:72%;">{safe_text(row['fonte'])}</span>
+                            <span style="color:#ffb020;flex-shrink:0;">&#128293; {impacto_val}</span>
+                        </div>
+                        <div class="card-impact-track">
+                            <div style="width:{largura_impacto}%;height:5px;background:{cor_borda};border-radius:999px;"></div>
+                        </div>
+                        <div class="card-title">{safe_text(row['titulo'])}</div>
+                        <div class="card-date">{safe_text(data_card)}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                st.button(
+                    "Acompanhar notícia",
+                    key=f"abrir_{noticia_id}",
+                    on_click=abrir_noticia,
+                    args=(noticia_id,),
+                    type="secondary"
+                )
 
     st.markdown(
         """
         <script>
         const buttons = window.parent.document.querySelectorAll('div[data-testid="stButton"] button');
         buttons.forEach(btn => {
-          if (btn.innerText.trim() === 'Acompanhar notícia') {
+          if (btn.innerText.trim() === 'Acompanhar notícia' || btn.innerText.trim() === 'Acompanhar caso') {
             btn.classList.add('tile-open');
           }
         });
@@ -1341,8 +1643,30 @@ else:
     st.divider()
 
     with st.expander("🕒 Linha do tempo das notícias"):
-        df_tempo = df_noticias.copy()
-        df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_coleta"], errors="coerce")
+        camada_tempo = st.radio(
+            "Unidade da linha do tempo",
+            options=["Por notícia", "Por caso"],
+            index=0 if modo_visualizacao == "Por notícia" else 1,
+            horizontal=True,
+            key="timeline_camada_visual"
+        )
+
+        if camada_tempo == "Por caso":
+            df_tempo = construir_df_casos(df_noticias_filtrado_sem_limite).copy()
+            if not df_tempo.empty:
+                df_tempo["fonte"] = df_tempo.get("fonte_representativa", "Caso")
+                df_tempo["data_coleta"] = df_tempo["data_referencia"]
+        else:
+            df_tempo = df_noticias_filtrado_sem_limite.copy()
+
+        if "data_publicacao" in df_tempo.columns and not pd.to_datetime(df_tempo["data_publicacao"], errors="coerce").isna().all():
+            coluna_tempo_base = "data_publicacao"
+        else:
+            coluna_tempo_base = "data_coleta"
+
+        df_tempo["data_plot"] = pd.to_datetime(df_tempo[coluna_tempo_base], errors="coerce")
+        # As funções de alerta usam data_coleta internamente; aqui ela passa a representar a data escolhida para a linha do tempo.
+        df_tempo["data_coleta"] = df_tempo["data_plot"]
         df_tempo = df_tempo.dropna(subset=["data_plot"])
 
         if not df_tempo.empty:
