@@ -1883,4 +1883,3 @@ else:
             )
         else:
             st.info("Ainda não há entidades extraídas para exibir.")
-
