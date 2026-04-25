@@ -220,6 +220,203 @@ def categorizar_publicamente(row) -> str:
     return "Estigma, exclusão e conflitos sociais"
 
 
+
+# ============================================================
+# Camada analítica adicional: representatividade e enquadramentos
+# Mantém o banco intacto. Tudo é inferido em tempo de execução.
+# ============================================================
+
+def _texto_longo_row(row) -> str:
+    partes = []
+    for col in ["titulo", "resumo", "texto_completo", "fonte", "categoria_publica", "classificacao", "criterio_filtro"]:
+        if col in row.index:
+            valor = row.get(col, "")
+            if valor is not None and not (isinstance(valor, float) and pd.isna(valor)):
+                partes.append(str(valor))
+    return " ".join(partes).lower()
+
+
+DICIONARIOS_EIXOS = {
+    "Racismo e discriminação racial": ["racismo", "racista", "injúria racial", "injuria racial", "discriminação racial", "discriminacao racial", "ofensa racista", "branquitude", "cotas raciais", "ação afirmativa", "acoes afirmativas", "negro", "negra", "pretos", "pretas", "população negra", "populacao negra"],
+    "Gênero, misoginia e violência contra mulheres": ["misoginia", "misóginia", "machismo", "sexismo", "feminicídio", "feminicidio", "violência contra a mulher", "violencia contra a mulher", "violência contra mulheres", "assédio", "assedio", "igualdade de gênero", "violência doméstica", "violencia domestica"],
+    "LGBTQIA+ e LGBTfobia": ["homofobia", "transfobia", "lgbtfobia", "lgbt", "lgbtqia", "travesti", "travestis", "gay", "gays", "lésbica", "lesbica", "bissexual", "não-binário", "nao-binario", "mulher trans", "homem trans", "pessoa trans", "identidade de gênero", "orientação sexual"],
+    "Intolerância religiosa e racismo religioso": ["intolerância religiosa", "intolerancia religiosa", "racismo religioso", "terreiro", "terreiros", "candomblé", "candomble", "umbanda", "orixá", "orixa", "mesquita", "sinagoga", "islamofobia", "antissemitismo", "ataque a terreiro"],
+    "Xenofobia, migração e refúgio": ["xenofobia", "xenófobia", "imigrante", "imigrantes", "migrante", "migrantes", "refugiado", "refugiados", "refugiada", "refugiadas", "migração", "migracao", "venezuelano", "venezuelana", "haitiano", "haitiana", "boliviano", "boliviana"],
+    "Povos indígenas, quilombolas e comunidades tradicionais": ["indígena", "indigena", "indígenas", "indigenas", "povos originários", "povos originarios", "quilombola", "quilombolas", "comunidades tradicionais", "comunidade tradicional", "demarcação", "demarcacao", "terra indígena", "terras indígenas", "yanomami", "guarani", "kaiowá", "kaiowa"],
+    "Capacitismo e deficiência": ["capacitismo", "capacitista", "pessoa com deficiência", "pessoa com deficiencia", "pessoas com deficiência", "pessoas com deficiencia", "pcd", "deficiência", "deficiencia", "autismo", "autista", "autistas", "neurodivergente", "acessibilidade"],
+    "Preconceito regional e territorial": ["preconceito regional", "nordestino", "nordestina", "nordestinos", "nordestinas", "xenofobia contra nordestinos", "sotaque", "sertanejo", "sertaneja", "amazônida", "amazonida", "ribeirinho", "ribeirinha", "periferia", "favela", "comunidade"],
+    "Classe social, pobreza e desigualdade": ["pobreza", "pobre", "pobres", "desigualdade social", "classe social", "morador de rua", "população em situação de rua", "populacao em situacao de rua", "sem-teto", "sem teto", "trabalho escravo", "trabalho análogo", "trabalho analogo"],
+    "Etarismo, infância, juventude e envelhecimento": ["etarismo", "idoso", "idosa", "idosos", "idosas", "velhice", "envelhecimento", "criança", "crianca", "adolescente", "adolescentes", "juventude", "jovens"],
+    "Corpo, aparência e estigma estético": ["gordofobia", "obesidade", "obeso", "obesa", "aparência", "aparencia", "padrão de beleza", "padrao de beleza", "corpo", "estética", "estetica"],
+}
+
+
+DICIONARIOS_ENQUADRAMENTO = {
+    "Grupo como ameaça": ["ameaça", "ameaca", "risco", "perigo", "invasão", "invasao", "desordem", "baderna", "radical", "extremista", "terror", "terrorismo", "crise migratória", "crise migratoria"],
+    "Grupo criminalizado": ["crime", "criminoso", "criminosa", "suspeito", "suspeita", "prisão", "prisao", "preso", "presa", "tráfico", "trafico", "roubo", "furto", "facção", "faccao", "violência", "violencia"],
+    "Grupo como vítima": ["vítima", "vitima", "vítimas", "vitimas", "agredido", "agredida", "ataque", "atacado", "atacada", "ameaçado", "ameaçada", "morto", "morta", "ferido", "ferida", "denuncia", "denúncia"],
+    "Sujeito de direitos": ["direitos", "direitos humanos", "igualdade", "cidadania", "proteção", "protecao", "garantia", "política pública", "politica publica", "ação afirmativa", "acoes afirmativas", "lei", "estatuto"],
+    "Agência política e resistência": ["protesto", "manifestação", "manifestacao", "mobilização", "mobilizacao", "movimento", "resistência", "resistencia", "liderança", "lideranca", "organização", "organizacao", "coletivo", "marcha"],
+    "Exotização ou folclorização": ["exótico", "exotico", "tribal", "folclore", "folclórico", "folclorico", "curioso", "curiosidade", "tradição exótica", "tradicao exotica"],
+    "Linguagem moralizante": ["família", "familia", "bons costumes", "ideologia", "imoral", "moral", "vergonha", "decadência", "decadencia", "degeneração", "degeneracao", "doutrinação", "doutrinacao"],
+    "Linguagem estrutural": ["estrutura", "estrutural", "desigualdade", "histórico", "historico", "colonial", "colonialismo", "institucional", "sistêmico", "sistemico", "reparação", "reparacao", "vulnerabilidade"],
+    "Invisibilização ou apagamento": ["invisível", "invisivel", "invisibilidade", "apagamento", "silenciamento", "exclusão", "exclusao", "marginalizado", "marginalizada", "subnotificação", "subnotificacao"],
+}
+
+
+TIPOS_FONTES_POR_NOME = {
+    "midia_identitaria_direitos": ["alma_preta", "geledes", "genero_e_numero", "agencia_patricia_galvao", "catarinas", "midia_india", "apib", "cimi", "conaq", "casa1", "correio_nago", "rioonwatch", "agencia_mural", "periferia_em_movimento", "voz_das_comunidades"],
+    "jornalismo_investigativo": ["agencia_publica", "the_intercept", "ponte", "reporter_brasil", "de_olho_nos_ruralistas", "nexo"],
+    "fact_checking": ["lupa", "aos_fatos", "comprova", "boatos", "verifica"],
+    "fonte_publica_institucional": ["senado", "camara", "gov", "stf", "stj", "tse", "agu", "mpf", "conass", "agencia_brasil", "ebc"],
+    "midia_religiosa": ["gospel", "cristao", "guiame", "cnbb", "vatican", "pleno_news"],
+    "midia_internacional_lusofona": ["bbc", "dw", "rfi", "france24", "euronews", "onu", "voa", "publico_pt", "observador_pt", "angola", "mocambique", "rtp_africa"],
+    "midia_regional": ["_ac", "_al", "_am", "_ap", "_ba", "_ce", "_df", "_es", "_go", "_ma", "_mg", "_ms", "_mt", "_pa", "_pb", "_pe", "_pi", "_pr", "_rj", "_rn", "_ro", "_rr", "_rs", "_sc", "_se", "_sp", "_to"],
+}
+
+
+REGIOES_POR_SIGLA = {
+    "_ac": "Norte", "_am": "Norte", "_ap": "Norte", "_pa": "Norte", "_ro": "Norte", "_rr": "Norte", "_to": "Norte",
+    "_al": "Nordeste", "_ba": "Nordeste", "_ce": "Nordeste", "_ma": "Nordeste", "_pb": "Nordeste", "_pe": "Nordeste", "_pi": "Nordeste", "_rn": "Nordeste", "_se": "Nordeste",
+    "_df": "Centro-Oeste", "_go": "Centro-Oeste", "_ms": "Centro-Oeste", "_mt": "Centro-Oeste",
+    "_es": "Sudeste", "_mg": "Sudeste", "_rj": "Sudeste", "_sp": "Sudeste",
+    "_pr": "Sul", "_rs": "Sul", "_sc": "Sul",
+}
+
+
+PESO_TIPO_FONTE = {
+    "midia_nacional_generalista": 1.00,
+    "midia_regional": 1.15,
+    "midia_identitaria_direitos": 1.35,
+    "jornalismo_investigativo": 1.25,
+    "fonte_publica_institucional": 1.00,
+    "fact_checking": 1.15,
+    "midia_religiosa": 1.05,
+    "midia_internacional_lusofona": 0.90,
+    "outra": 1.00,
+}
+
+
+def _fonte_normalizada(fonte) -> str:
+    return re.sub(r"[^a-z0-9_]+", "_", str(fonte or "").lower()).strip("_")
+
+
+def inferir_tipo_fonte(fonte: str) -> str:
+    f = _fonte_normalizada(fonte)
+    for tipo, marcadores in TIPOS_FONTES_POR_NOME.items():
+        if any(m in f for m in marcadores):
+            return tipo
+    return "midia_nacional_generalista"
+
+
+def inferir_regiao_fonte(fonte: str) -> str:
+    f = _fonte_normalizada(fonte)
+    for sigla, regiao in REGIOES_POR_SIGLA.items():
+        if sigla in f or f.endswith(sigla.strip("_")):
+            return regiao
+    if any(m in f for m in ["bbc", "dw", "rfi", "france24", "euronews", "onu", "voa", "publico_pt", "observador_pt"]):
+        return "Internacional"
+    return "Nacional/sem região explícita"
+
+
+def classificar_por_dicionario(texto: str, dicionario: dict, fallback: str = "Não classificado") -> str:
+    encontrados = []
+    for rotulo, termos in dicionario.items():
+        if any(t.lower() in texto for t in termos):
+            encontrados.append(rotulo)
+    if not encontrados:
+        return fallback
+    return "; ".join(encontrados)
+
+
+def classificar_eixos_preconceito(row) -> str:
+    texto = _texto_longo_row(row)
+    eixos = classificar_por_dicionario(texto, DICIONARIOS_EIXOS, fallback="Outros/inespecífico")
+    if eixos == "Outros/inespecífico" and "categoria_publica" in row.index and pd.notna(row.get("categoria_publica")):
+        return str(row.get("categoria_publica"))
+    return eixos
+
+
+def classificar_enquadramentos(row) -> str:
+    texto = _texto_longo_row(row)
+    return classificar_por_dicionario(texto, DICIONARIOS_ENQUADRAMENTO, fallback="Enquadramento não identificado")
+
+
+def enriquecer_dataframe_analitico(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    if "fonte" in out.columns:
+        out["tipo_fonte"] = out["fonte"].apply(inferir_tipo_fonte)
+        out["regiao_fonte"] = out["fonte"].apply(inferir_regiao_fonte)
+        out["peso_tipo_fonte"] = out["tipo_fonte"].map(PESO_TIPO_FONTE).fillna(1.0)
+    else:
+        out["tipo_fonte"] = "outra"
+        out["regiao_fonte"] = "Não informado"
+        out["peso_tipo_fonte"] = 1.0
+    out["eixos_preconceito"] = out.apply(classificar_eixos_preconceito, axis=1)
+    out["enquadramentos"] = out.apply(classificar_enquadramentos, axis=1)
+    return out
+
+
+def explodir_lista_semicolon(df: pd.DataFrame, coluna: str, nome_saida: str) -> pd.DataFrame:
+    if df.empty or coluna not in df.columns:
+        return pd.DataFrame(columns=[nome_saida])
+    tmp = df[[coluna]].copy()
+    tmp[coluna] = tmp[coluna].fillna("Não informado").astype(str).str.split(";")
+    tmp = tmp.explode(coluna)
+    tmp[coluna] = tmp[coluna].astype(str).str.strip()
+    tmp.loc[tmp[coluna] == "", coluna] = "Não informado"
+    return tmp.rename(columns={coluna: nome_saida})
+
+
+def filtrar_coluna_multivalor(df: pd.DataFrame, coluna: str, selecionados: list) -> pd.DataFrame:
+    if not selecionados or coluna not in df.columns:
+        return df
+    selecionados = [str(x).strip() for x in selecionados if str(x).strip()]
+    if not selecionados:
+        return df
+    padrao = "|".join(re.escape(x) for x in selecionados)
+    return df[df[coluna].fillna("").astype(str).str.contains(padrao, case=False, regex=True, na=False)]
+
+
+def calcular_hhi(series: pd.Series) -> float:
+    if series is None or series.empty:
+        return np.nan
+    proporcoes = series.value_counts(normalize=True)
+    if proporcoes.empty:
+        return np.nan
+    return float((proporcoes ** 2).sum())
+
+
+def interpretar_hhi(hhi: float) -> str:
+    if pd.isna(hhi):
+        return "Não calculado"
+    if hhi < 0.10:
+        return "baixa concentração"
+    if hhi < 0.18:
+        return "concentração moderada"
+    return "alta concentração"
+
+
+def gerar_sintese_rodada(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "Não há registros no recorte atual."
+    total = len(df)
+    hhi = calcular_hhi(df["fonte"]) if "fonte" in df.columns else np.nan
+    tipo_top = df["tipo_fonte"].value_counts().idxmax() if "tipo_fonte" in df.columns and not df["tipo_fonte"].empty else "não identificado"
+    eixo_df = explodir_lista_semicolon(df, "eixos_preconceito", "Eixo")
+    enquad_df = explodir_lista_semicolon(df, "enquadramentos", "Enquadramento")
+    eixo_top = eixo_df["Eixo"].value_counts().idxmax() if not eixo_df.empty else "não identificado"
+    enquad_top = enquad_df["Enquadramento"].value_counts().idxmax() if not enquad_df.empty else "não identificado"
+    hhi_txt = "não calculado" if pd.isna(hhi) else f"{hhi:.3f}"
+    return (
+        f"No recorte atual, há {total} notícias carregadas. "
+        f"O tipo de fonte mais frequente é '{tipo_top}'. "
+        f"O eixo temático mais recorrente é '{eixo_top}' e o enquadramento mais frequente é '{enquad_top}'. "
+        f"O índice HHI por fonte é {hhi_txt}, indicando {interpretar_hhi(hhi)} da coleta."
+    )
+
 def aplicar_busca_textual(df: pd.DataFrame, consulta: str) -> pd.DataFrame:
     consulta = (consulta or "").strip().lower()
     if not consulta:
@@ -230,20 +427,25 @@ def aplicar_busca_textual(df: pd.DataFrame, consulta: str) -> pd.DataFrame:
         return df
 
     df_busca = df.copy()
-    df_busca["_texto_busca"] = (
-        df_busca["titulo"].fillna("").astype(str) + " "
-        + df_busca["resumo"].fillna("").astype(str) + " "
-        + df_busca["texto_completo"].fillna("").astype(str) + " "
-        + df_busca["fonte"].fillna("").astype(str) + " "
-        + df_busca["categoria_publica"].fillna("").astype(str)
-    ).str.lower()
+    colunas_texto = [
+        "titulo", "resumo", "texto_completo", "fonte", "categoria_publica",
+        "eixos_preconceito", "enquadramentos", "tipo_fonte", "regiao_fonte",
+        "classificacao", "criterio_filtro"
+    ]
+    existentes = [c for c in colunas_texto if c in df_busca.columns]
+    if not existentes:
+        return df_busca
+
+    df_busca["_texto_busca"] = ""
+    for col in existentes:
+        df_busca["_texto_busca"] = df_busca["_texto_busca"] + " " + df_busca[col].fillna("").astype(str)
+    df_busca["_texto_busca"] = df_busca["_texto_busca"].str.lower()
 
     mascara = pd.Series(True, index=df_busca.index)
     for termo in termos:
         mascara = mascara & df_busca["_texto_busca"].str.contains(termo, regex=False, na=False)
 
     return df_busca[mascara].drop(columns=["_texto_busca"])
-
 
 def preparar_serie_alerta_total(df_base: pd.DataFrame) -> pd.DataFrame:
     df_aux = df_base.copy()
@@ -654,6 +856,7 @@ if not df_noticias.empty and "data_coleta" in df_noticias.columns:
     df_noticias["data_coleta_fmt"] = df_noticias["data_coleta"].apply(formatar_data_curta)
     data_mais_recente = formatar_data_curta(df_noticias["data_coleta"].max())
     df_noticias["categoria_publica"] = df_noticias.apply(categorizar_publicamente, axis=1)
+    df_noticias = enriquecer_dataframe_analitico(df_noticias)
 else:
     data_mais_recente = "—"
 
@@ -914,6 +1117,8 @@ else:
         return max(1, int(score))
 
     df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
+    if "peso_tipo_fonte" in df_noticias.columns:
+        df_noticias["impacto_ponderado"] = (df_noticias["impacto"].astype(float) * df_noticias["peso_tipo_fonte"].astype(float)).round(2)
     df_noticias["data_filtro"] = pd.to_datetime(df_noticias["data_coleta"], errors="coerce")
 
     if not df_noticias["data_filtro"].isna().all():
@@ -982,6 +1187,43 @@ else:
                 placeholder="Selecione portais"
             )
 
+        fa1, fa2, fa3 = st.columns([1.4, 1.4, 1.2])
+        with fa1:
+            eixos_disponiveis = sorted(
+                explodir_lista_semicolon(df_noticias, "eixos_preconceito", "Eixo")["Eixo"].dropna().unique().tolist()
+            ) if "eixos_preconceito" in df_noticias.columns else []
+            filtro_eixos_cards = st.multiselect(
+                "Eixos analíticos",
+                options=eixos_disponiveis,
+                default=[],
+                key="filtro_eixos_cards",
+                placeholder="Ex: racismo, gênero, xenofobia"
+            )
+
+        with fa2:
+            enquad_disponiveis = sorted(
+                explodir_lista_semicolon(df_noticias, "enquadramentos", "Enquadramento")["Enquadramento"].dropna().unique().tolist()
+            ) if "enquadramentos" in df_noticias.columns else []
+            filtro_enquadramentos_cards = st.multiselect(
+                "Enquadramentos",
+                options=enquad_disponiveis,
+                default=[],
+                key="filtro_enquadramentos_cards",
+                placeholder="Ex: ameaça, vítima, direitos"
+            )
+
+        with fa3:
+            tipos_fonte_disponiveis = sorted(
+                [x for x in df_noticias.get("tipo_fonte", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x.strip()]
+            )
+            filtro_tipo_fonte_cards = st.multiselect(
+                "Tipo de fonte",
+                options=tipos_fonte_disponiveis,
+                default=[],
+                key="filtro_tipo_fonte_cards",
+                placeholder="Selecione tipos"
+            )
+
     df_cards = df_noticias.copy()
 
     if filtro_periodo != "Tudo" and not df_cards["data_filtro"].isna().all():
@@ -1004,6 +1246,14 @@ else:
     if filtro_categorias:
         df_cards = df_cards[df_cards["categoria_publica"].isin(filtro_categorias)]
 
+    df_cards = filtrar_coluna_multivalor(df_cards, "eixos_preconceito", filtro_eixos_cards)
+    df_cards = filtrar_coluna_multivalor(df_cards, "enquadramentos", filtro_enquadramentos_cards)
+
+    if filtro_tipo_fonte_cards and "tipo_fonte" in df_cards.columns:
+        df_cards = df_cards[df_cards["tipo_fonte"].isin(filtro_tipo_fonte_cards)]
+
+    df_cards_filtrado_sem_limite = df_cards.copy()
+
     df_cards = df_cards.sort_values(
         by=["impacto", "data_coleta"],
         ascending=[False, False]
@@ -1019,6 +1269,25 @@ else:
             f"Exibindo {len(df_cards)} de {len(df_noticias)} notícias carregadas nesta consulta. "
             f"O banco completo tem {total_banco} registros."
         )
+
+    with st.expander("⬇️ Exportar recorte filtrado", expanded=False):
+        st.caption("Exporta o recorte após filtros de período, busca, categoria, eixo, enquadramento, portal e tipo de fonte, antes do limite visual dos cards.")
+        colunas_export = [
+            c for c in [
+                "id", "data_coleta", "fonte", "tipo_fonte", "regiao_fonte", "titulo", "url_fonte",
+                "categoria_publica", "eixos_preconceito", "enquadramentos", "classificacao",
+                "criterio_filtro", "score_relevancia", "impacto", "impacto_ponderado", "resumo"
+            ] if c in df_cards_filtrado_sem_limite.columns
+        ]
+        df_export = df_cards_filtrado_sem_limite[colunas_export].copy() if colunas_export else df_cards_filtrado_sem_limite.copy()
+        st.download_button(
+            "Baixar CSV do recorte filtrado",
+            data=df_export.to_csv(index=False).encode("utf-8-sig"),
+            file_name="recorte_observatorio_preconceitos.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        st.dataframe(df_export.head(100), use_container_width=True, hide_index=True)
 
     QTD_COLUNAS = 3
     cols = st.columns(QTD_COLUNAS)
@@ -1482,6 +1751,81 @@ else:
             use_container_width=True,
             key="plot_categorias_publicas"
         )
+
+    with st.expander("🧭 Representatividade da coleta", expanded=False):
+        st.markdown("**Síntese automática da rodada**")
+        st.info(gerar_sintese_rodada(df_noticias))
+
+        hhi_fonte = calcular_hhi(df_noticias["fonte"]) if "fonte" in df_noticias.columns else np.nan
+        hhi_tipo = calcular_hhi(df_noticias["tipo_fonte"]) if "tipo_fonte" in df_noticias.columns else np.nan
+        n_fontes = int(df_noticias["fonte"].nunique()) if "fonte" in df_noticias.columns else 0
+        n_tipos = int(df_noticias["tipo_fonte"].nunique()) if "tipo_fonte" in df_noticias.columns else 0
+
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Fontes distintas", n_fontes)
+        r2.metric("Tipos de fonte", n_tipos)
+        r3.metric("HHI por fonte", "—" if pd.isna(hhi_fonte) else f"{hhi_fonte:.3f}")
+        r4.metric("Concentração", interpretar_hhi(hhi_fonte))
+
+        c_rep1, c_rep2 = st.columns(2)
+        with c_rep1:
+            if "tipo_fonte" in df_noticias.columns:
+                stats_tipo = df_noticias["tipo_fonte"].value_counts().reset_index()
+                stats_tipo.columns = ["Tipo de fonte", "Quantidade"]
+                fig_tipo = px.bar(stats_tipo, x="Tipo de fonte", y="Quantidade", title="Distribuição por tipo de fonte")
+                fig_tipo.update_layout(xaxis_tickangle=-35)
+                st.plotly_chart(fig_tipo, use_container_width=True, key="plot_tipo_fonte_representatividade")
+        with c_rep2:
+            if "regiao_fonte" in df_noticias.columns:
+                stats_regiao = df_noticias["regiao_fonte"].value_counts().reset_index()
+                stats_regiao.columns = ["Região inferida", "Quantidade"]
+                fig_regiao = px.bar(stats_regiao, x="Região inferida", y="Quantidade", title="Distribuição por região inferida da fonte")
+                fig_regiao.update_layout(xaxis_tickangle=-35)
+                st.plotly_chart(fig_regiao, use_container_width=True, key="plot_regiao_fonte_representatividade")
+
+        with st.expander("Tabela de fontes, tipos e regiões inferidas"):
+            if "fonte" in df_noticias.columns:
+                cols_tab = [c for c in ["fonte", "tipo_fonte", "regiao_fonte"] if c in df_noticias.columns]
+                tab_fontes = df_noticias[cols_tab].drop_duplicates().sort_values(cols_tab).rename(columns={"fonte": "Fonte", "tipo_fonte": "Tipo de fonte", "regiao_fonte": "Região inferida"})
+                st.dataframe(tab_fontes, use_container_width=True, hide_index=True)
+
+    with st.expander("🧩 Eixos analíticos e enquadramentos", expanded=False):
+        eixos_long = explodir_lista_semicolon(df_noticias, "eixos_preconceito", "Eixo")
+        enquad_long = explodir_lista_semicolon(df_noticias, "enquadramentos", "Enquadramento")
+        ce1, ce2 = st.columns(2)
+        with ce1:
+            if not eixos_long.empty:
+                stats_eixos = eixos_long["Eixo"].value_counts().reset_index()
+                stats_eixos.columns = ["Eixo", "Quantidade"]
+                fig_eixos = px.bar(stats_eixos, y="Eixo", x="Quantidade", orientation="h", title="Eixos temáticos de preconceito/estigma")
+                fig_eixos.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(fig_eixos, use_container_width=True, key="plot_eixos_preconceito")
+            else:
+                st.info("Não há eixos temáticos identificados no recorte atual.")
+        with ce2:
+            if not enquad_long.empty:
+                stats_enq = enquad_long["Enquadramento"].value_counts().reset_index()
+                stats_enq.columns = ["Enquadramento", "Quantidade"]
+                fig_enq = px.bar(stats_enq, y="Enquadramento", x="Quantidade", orientation="h", title="Enquadramentos discursivos")
+                fig_enq.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(fig_enq, use_container_width=True, key="plot_enquadramentos")
+            else:
+                st.info("Não há enquadramentos identificados no recorte atual.")
+
+        if "eixos_preconceito" in df_noticias.columns and "enquadramentos" in df_noticias.columns:
+            matriz_base = df_noticias[["id", "eixos_preconceito", "enquadramentos"]].copy()
+            matriz_base["Eixo"] = matriz_base["eixos_preconceito"].fillna("Não informado").astype(str).str.split(";")
+            matriz_base = matriz_base.explode("Eixo")
+            matriz_base["Eixo"] = matriz_base["Eixo"].astype(str).str.strip()
+            matriz_base["Enquadramento"] = matriz_base["enquadramentos"].fillna("Não informado").astype(str).str.split(";")
+            matriz_base = matriz_base.explode("Enquadramento")
+            matriz_base["Enquadramento"] = matriz_base["Enquadramento"].astype(str).str.strip()
+            matriz = pd.crosstab(matriz_base["Eixo"], matriz_base["Enquadramento"])
+            if not matriz.empty:
+                fig_heat = px.imshow(matriz, text_auto=True, aspect="auto", title="Matriz eixo temático × enquadramento discursivo")
+                st.plotly_chart(fig_heat, use_container_width=True, key="plot_matriz_eixo_enquadramento")
+                with st.expander("Ver tabela da matriz eixo × enquadramento"):
+                    st.dataframe(matriz.reset_index(), use_container_width=True, hide_index=True)
 
     with st.expander("🎯 Temas e personagens (NER)"):
         if not df_entidades.empty:
