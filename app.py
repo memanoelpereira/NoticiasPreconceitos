@@ -1813,19 +1813,56 @@ else:
                 st.info("Não há enquadramentos identificados no recorte atual.")
 
         if "eixos_preconceito" in df_noticias.columns and "enquadramentos" in df_noticias.columns:
+            # Em versões recentes do pandas, pd.crosstab pode falhar quando as Series
+            # explodidas mantêm rótulos de índice duplicados. Por isso, a matriz é
+            # montada com reset_index(drop=True) e groupby, preservando a lógica original.
             matriz_base = df_noticias[["id", "eixos_preconceito", "enquadramentos"]].copy()
-            matriz_base["Eixo"] = matriz_base["eixos_preconceito"].fillna("Não informado").astype(str).str.split(";")
-            matriz_base = matriz_base.explode("Eixo")
+            matriz_base["Eixo"] = (
+                matriz_base["eixos_preconceito"]
+                .fillna("Não informado")
+                .astype(str)
+                .str.split(";")
+            )
+            matriz_base = matriz_base.explode("Eixo").reset_index(drop=True)
             matriz_base["Eixo"] = matriz_base["Eixo"].astype(str).str.strip()
-            matriz_base["Enquadramento"] = matriz_base["enquadramentos"].fillna("Não informado").astype(str).str.split(";")
-            matriz_base = matriz_base.explode("Enquadramento")
+
+            matriz_base["Enquadramento"] = (
+                matriz_base["enquadramentos"]
+                .fillna("Não informado")
+                .astype(str)
+                .str.split(";")
+            )
+            matriz_base = matriz_base.explode("Enquadramento").reset_index(drop=True)
             matriz_base["Enquadramento"] = matriz_base["Enquadramento"].astype(str).str.strip()
-            matriz = pd.crosstab(matriz_base["Eixo"], matriz_base["Enquadramento"])
+
+            matriz_base = matriz_base[
+                (matriz_base["Eixo"] != "") &
+                (matriz_base["Enquadramento"] != "")
+            ].copy()
+
+            if not matriz_base.empty:
+                matriz = (
+                    matriz_base
+                    .groupby(["Eixo", "Enquadramento"], dropna=False)
+                    .size()
+                    .unstack(fill_value=0)
+                    .sort_index()
+                )
+            else:
+                matriz = pd.DataFrame()
+
             if not matriz.empty:
-                fig_heat = px.imshow(matriz, text_auto=True, aspect="auto", title="Matriz eixo temático × enquadramento discursivo")
+                fig_heat = px.imshow(
+                    matriz,
+                    text_auto=True,
+                    aspect="auto",
+                    title="Matriz eixo temático × enquadramento discursivo"
+                )
                 st.plotly_chart(fig_heat, use_container_width=True, key="plot_matriz_eixo_enquadramento")
                 with st.expander("Ver tabela da matriz eixo × enquadramento"):
                     st.dataframe(matriz.reset_index(), use_container_width=True, hide_index=True)
+            else:
+                st.info("Não há combinações válidas de eixo e enquadramento para montar a matriz.")
 
     with st.expander("🎯 Temas e personagens (NER)"):
         if not df_entidades.empty:
