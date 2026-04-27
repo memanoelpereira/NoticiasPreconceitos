@@ -2449,7 +2449,7 @@ else:
                                    SELECT id, data_coleta, fonte, titulo, falso_positivo
                                    FROM noticias
                                    WHERE falso_positivo = FALSE
-                                   ORDER BY data_coleta DESC LIMIT 200
+                                   ORDER BY data_coleta DESC LIMIT 50
                                    """)
 
             engine = get_engine()
