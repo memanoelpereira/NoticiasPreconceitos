@@ -2425,7 +2425,7 @@ else:
             st.info("Ainda não há entidades extraídas para exibir.")
 
     # ---------------------------------------------------------
-    # ABA DE CURADORIA DE DADOS (ADMIN)
+    # ABA DE CURADORIA DE DADOS (ADMIN)     mmmm
     # ---------------------------------------------------------
     st.divider()
     with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
