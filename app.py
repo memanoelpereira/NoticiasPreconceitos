@@ -2441,8 +2441,14 @@ else:
                                    """)
 
             # Conecta e puxa os dados
+            # Conecta e puxa os dados de forma segura (SQLAlchemy 2.0+)
             engine = get_engine()
-            df_para_curar = pd.read_sql(query_curadoria, engine)
+            try:
+                with engine.connect() as conn:
+                    df_para_curar = pd.read_sql(query_curadoria, conn)
+            except Exception as e:
+                st.error(f"Erro real do banco de dados (desocultado): {e}")
+                st.stop()
 
             if not df_para_curar.empty:
                 # Transforma em um editor interativo
