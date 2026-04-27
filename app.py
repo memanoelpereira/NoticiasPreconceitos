@@ -2430,70 +2430,78 @@ else:
     st.divider()
     with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
         st.markdown(
-            "Marque a caixa abaixo para ocultar fofocas, ruídos ou erros do pipeline. As notícias marcadas sumirão dos gráficos, mas continuarão salvas no banco para treinamentos futuros de IA."
+            "Área restrita. Insira a senha de administrador para gerir os falsos positivos do pipeline."
         )
 
-        # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
-        query_curadoria = text("""
-                               SELECT id, data_coleta, fonte, titulo, falso_positivo
-                               FROM noticias
-                               WHERE falso_positivo = FALSE
-                               ORDER BY data_coleta DESC LIMIT 200
-                               """)
+        # 1. Campo de senha seguro (os caracteres ficam ocultos como ***)
+        senha_digitada = st.text_input("Senha de Acesso", type="password", key="admin_password_input")
 
-        # Conecta e puxa os dados de forma segura (SQLAlchemy 2.0+)
-        engine = get_engine()
-        try:
-            with engine.connect() as conn:
-                df_para_curar = pd.read_sql(query_curadoria, conn)
-        except Exception as e:
-            st.error(f"Erro real do banco de dados (desocultado): {e}")
-            st.stop()
+        # Puxa a senha verdadeira do arquivo de segredos do Streamlit
+        # (Se a senha não estiver configurada, ele usa "senha_provisoria" para não quebrar a app)
+        senha_correta = st.secrets.get("ADMIN_PASSWORD", "senha_provisoria")
 
-        if not df_para_curar.empty:
-            # Transforma em um editor interativo
-            df_editado = st.data_editor(
-                df_para_curar,
-                column_config={
-                    "falso_positivo": st.column_config.CheckboxColumn(
-                        "É Falso Positivo? 🗑️",
-                        help="Marque para ocultar do painel",
-                        default=False,
-                    ),
-                    "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
-                    "fonte": "Fonte da Notícia",  # <--- A correção principal está aqui
-                    "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
-                },
-                disabled=["id", "data_coleta", "fonte", "titulo"],  # Protege os textos
-                hide_index=True,
-                use_container_width=True,
-                key="editor_curadoria"
-            )
+        # 2. Só exibe a tabela se a senha estiver correta
+        if senha_digitada == senha_correta:
+            st.success("Acesso autorizado!")
 
-            # Botão de Salvar
-            if st.button("Salvar Curadoria", type="primary"):
-                # Separa apenas as linhas em que a caixinha foi marcada
-                modificados = df_editado[df_editado["falso_positivo"] == True]
+            # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
+            query_curadoria = text("""
+                                   SELECT id, data_coleta, fonte, titulo, falso_positivo
+                                   FROM noticias
+                                   WHERE falso_positivo = FALSE
+                                   ORDER BY data_coleta DESC LIMIT 200
+                                   """)
 
-                if not modificados.empty:
-                    ids_para_ocultar = modificados["id"].tolist()
+            engine = get_engine()
+            try:
+                with engine.connect() as conn:
+                    df_para_curar = pd.read_sql(query_curadoria, conn)
+            except Exception as e:
+                st.error(f"Erro real do banco de dados (desocultado): {e}")
+                st.stop()
 
-                    # Atualiza o banco de dados
-                    update_query = text("""
-                                        UPDATE noticias
-                                        SET falso_positivo = TRUE
-                                        WHERE id = ANY (:ids)
-                                        """)
+            if not df_para_curar.empty:
+                df_editado = st.data_editor(
+                    df_para_curar,
+                    column_config={
+                        "falso_positivo": st.column_config.CheckboxColumn(
+                            "É Falso Positivo? 🗑️",
+                            help="Marque para ocultar do painel",
+                            default=False,
+                        ),
+                        "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
+                        "fonte": "Fonte da Notícia",
+                        "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
+                    },
+                    disabled=["id", "data_coleta", "fonte", "titulo"],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_curadoria"
+                )
 
-                    try:
-                        with engine.begin() as conn:
-                            conn.execute(update_query, {"ids": ids_para_ocultar})
-                        st.success(
-                            f"{len(ids_para_ocultar)} notícias removidas com sucesso! Atualizando painel...")
-                        st.rerun()  # Recarrega a página para atualizar os gráficos
-                    except Exception as e:
-                        st.error(f"Erro ao atualizar o banco: {e}")
-                else:
-                    st.info("Nenhuma caixinha foi marcada. Nada a salvar.")
-        else:
-            st.success("Não há notícias pendentes de curadoria neste período!")
+                if st.button("Salvar Curadoria", type="primary"):
+                    modificados = df_editado[df_editado["falso_positivo"] == True]
+
+                    if not modificados.empty:
+                        ids_para_ocultar = modificados["id"].tolist()
+                        update_query = text("""
+                                            UPDATE noticias
+                                            SET falso_positivo = TRUE
+                                            WHERE id = ANY (:ids)
+                                            """)
+
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(update_query, {"ids": ids_para_ocultar})
+                            st.success(f"{len(ids_para_ocultar)} notícias removidas! Atualizando painel...")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar o banco: {e}")
+                    else:
+                        st.info("Nenhuma caixinha foi marcada. Nada a salvar.")
+            else:
+                st.success("Não há notícias pendentes de curadoria neste período!")
+
+        # 3. Tratamento para quando a pessoa digita a senha errada
+        elif senha_digitada != "":
+            st.error("Senha incorreta. Acesso negado.")
