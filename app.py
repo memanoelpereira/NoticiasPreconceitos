@@ -48,23 +48,30 @@ def get_engine():
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
+    """
+    Constrói a query de forma segura utilizando bind parameters.
+    Impede SQL Injection e problemas de concatenação na cláusula WHERE.
+    """
     if periodo_sql == "tudo":
         query = text("""
-            SELECT *
-            FROM noticias
-            ORDER BY data_coleta DESC
-            LIMIT :limite
-        """)
+                     SELECT *
+                     FROM noticias
+                     ORDER BY data_coleta DESC LIMIT :limite
+                     """)
         params = {"limite": int(limite)}
     else:
-        query = text(f"""
-            SELECT *
-            FROM noticias
-            WHERE data_coleta >= NOW() - INTERVAL '{periodo_sql}'
-            ORDER BY data_coleta DESC
-            LIMIT :limite
-        """)
-        params = {"limite": int(limite)}
+        # Assumindo que periodo_sql vem do dicionário (ex: "30 days")
+        query = text("""
+                     SELECT *
+                     FROM noticias
+                     WHERE data_coleta >= NOW() - CAST(:intervalo AS INTERVAL)
+                     ORDER BY data_coleta DESC LIMIT :limite
+                     """)
+        params = {
+            "limite": int(limite),
+            "intervalo": periodo_sql
+        }
+
     return query, params
 
 
@@ -1807,93 +1814,173 @@ else:
     st.divider()
 
     with st.expander("🕒 Linha do tempo"):
-        camada_tempo = st.radio(
-            "Unidade da linha do tempo",
-            options=["Por notícia", "Por caso"],
-            index=0 if modo_visualizacao == "Por notícia" else 1,
-            horizontal=True,
-            key="timeline_camada_visual",
-            help=(
-                "Por notícia mede volume/repercussão da cobertura. "
-                "Por caso mede acontecimentos estimados, agrupando matérias semelhantes."
-            )
+        st.caption(
+            "A linha do tempo por data de coleta mede o funcionamento do monitoramento: quando a notícia entrou na base. "
+            "A linha por data de publicação tenta aproximar o momento do acontecimento editorial, mas depende da qualidade dos metadados capturados."
         )
 
-        base_data_tempo = st.radio(
-            "Data usada na linha do tempo",
-            options=["Data de coleta", "Data de publicação"],
-            index=0,
-            horizontal=True,
-            key="timeline_base_data",
-            help=(
-                "A data de coleta é mais estável para acompanhar a evolução do monitoramento. "
-                "A data de publicação é mantida para análise substantiva, mas pode estar ausente ou vir contaminada "
-                "por datas antigas capturadas das páginas."
+        tl0, tl1, tl2 = st.columns([1.1, 1.2, 1.4])
+        with tl0:
+            camada_tempo = st.radio(
+                "Unidade da linha do tempo",
+                options=["Por notícia", "Por caso"],
+                index=0 if modo_visualizacao == "Por notícia" else 1,
+                horizontal=True,
+                key="timeline_camada_visual_v4",
+                help=(
+                    "Por notícia mede volume/repercussão da cobertura. "
+                    "Por caso mede acontecimentos estimados, agrupando matérias semelhantes."
+                )
             )
-        )
 
-        if camada_tempo == "Por caso":
-            df_tempo = construir_df_casos(df_noticias_filtrado_sem_limite).copy()
-            unidade_tempo = "casos"
-            unidade_tempo_singular = "caso"
-            if not df_tempo.empty:
-                df_tempo["fonte"] = df_tempo.get("fonte_representativa", "Caso")
+        with tl1:
+            base_data_tempo = st.radio(
+                "Data usada",
+                options=["Data de coleta", "Data de publicação"],
+                index=0,
+                horizontal=True,
+                key="timeline_base_data_v4",
+                help=(
+                    "Use data de coleta para avaliar o monitoramento. "
+                    "Use data de publicação para uma aproximação substantiva da ocorrência, sabendo que pode haver metadados ausentes ou imprecisos."
+                )
+            )
+
+        with tl2:
+            if camada_tempo == "Por caso":
+                if base_data_tempo == "Data de coleta":
+                    marco_caso = st.radio(
+                        "Marco temporal do caso",
+                        options=["Primeira coleta", "Última coleta"],
+                        index=0,
+                        horizontal=True,
+                        key="timeline_marco_caso_coleta_v4",
+                        help="Primeira coleta mede quando o caso entrou no observatório; última coleta mede a repercussão mais recente do caso."
+                    )
+                else:
+                    marco_caso = st.radio(
+                        "Marco temporal do caso",
+                        options=["Primeira publicação", "Última publicação"],
+                        index=0,
+                        horizontal=True,
+                        key="timeline_marco_caso_publicacao_v4",
+                        help="Use primeira publicação para localizar o começo do caso; use última publicação para localizar repercussão editorial posterior."
+                    )
+            else:
+                marco_caso = None
+
+        def _serie_datetime_br(valores) -> pd.Series:
+            s = pd.to_datetime(valores, errors="coerce", utc=True)
+            try:
+                return s.dt.tz_convert(FUSO_BRASIL)
+            except Exception:
+                return s
+
+        def _preparar_base_linha_tempo() -> tuple[pd.DataFrame, str, str]:
+            if camada_tempo == "Por caso":
+                base = df_casos_filtrado_sem_limite.copy()
+                unidade_plural = "casos"
+                unidade_singular = "caso"
+                if base.empty:
+                    return base, unidade_plural, unidade_singular
+
                 if base_data_tempo == "Data de publicação":
-                    df_tempo["data_timeline"] = pd.to_datetime(
-                        df_tempo.get("data_publicacao_min", pd.NaT),
-                        errors="coerce"
-                    ).fillna(pd.to_datetime(df_tempo.get("primeira_coleta", pd.NaT), errors="coerce"))
+                    col_data = "data_publicacao_min" if marco_caso == "Primeira publicação" else "data_publicacao_max"
+                    fallback = "primeira_coleta" if marco_caso == "Primeira publicação" else "ultima_coleta"
+                    base["data_timeline"] = _serie_datetime_br(base.get(col_data, pd.NaT)).fillna(
+                        _serie_datetime_br(base.get(fallback, pd.NaT))
+                    )
+                    base["origem_data_linha"] = np.where(base.get(col_data, pd.Series(index=base.index, dtype=object)).notna(), col_data, fallback)
                 else:
-                    df_tempo["data_timeline"] = pd.to_datetime(df_tempo.get("primeira_coleta", pd.NaT), errors="coerce")
-        else:
-            df_tempo = df_noticias_filtrado_sem_limite.copy()
-            unidade_tempo = "notícias"
-            unidade_tempo_singular = "notícia"
-            if not df_tempo.empty:
-                if base_data_tempo == "Data de publicação" and "data_publicacao" in df_tempo.columns:
-                    df_tempo["data_timeline"] = pd.to_datetime(
-                        df_tempo["data_publicacao"],
-                        errors="coerce"
-                    ).fillna(pd.to_datetime(df_tempo.get("data_coleta", pd.NaT), errors="coerce"))
-                else:
-                    df_tempo["data_timeline"] = pd.to_datetime(df_tempo.get("data_coleta", pd.NaT), errors="coerce")
+                    col_data = "primeira_coleta" if marco_caso == "Primeira coleta" else "ultima_coleta"
+                    base["data_timeline"] = _serie_datetime_br(base.get(col_data, pd.NaT))
+                    base["origem_data_linha"] = col_data
+
+                if "fonte" not in base.columns:
+                    base["fonte"] = base.get("fonte_representativa", "Caso")
+                return base, unidade_plural, unidade_singular
+
+            base = df_noticias_filtrado_sem_limite.copy()
+            unidade_plural = "notícias"
+            unidade_singular = "notícia"
+            if base.empty:
+                return base, unidade_plural, unidade_singular
+
+            if base_data_tempo == "Data de publicação" and "data_publicacao" in base.columns:
+                pub = _serie_datetime_br(base["data_publicacao"])
+                coleta = _serie_datetime_br(base.get("data_coleta", pd.NaT))
+                base["data_timeline"] = pub.fillna(coleta)
+                base["origem_data_linha"] = np.where(pub.notna(), "data_publicacao", "data_coleta_fallback")
+            else:
+                base["data_timeline"] = _serie_datetime_br(base.get("data_coleta", pd.NaT))
+                base["origem_data_linha"] = "data_coleta"
+            return base, unidade_plural, unidade_singular
+
+        df_tempo, unidade_tempo, unidade_tempo_singular = _preparar_base_linha_tempo()
 
         if df_tempo.empty:
             st.info("Não há dados para montar a linha do tempo.")
         else:
-            df_tempo["data_plot"] = pd.to_datetime(df_tempo["data_timeline"], errors="coerce")
-            # As funções de alerta usam data_coleta internamente; aqui ela passa a representar a data escolhida para a linha do tempo.
-            df_tempo["data_coleta"] = df_tempo["data_plot"]
-            df_tempo = df_tempo.dropna(subset=["data_plot"])
-
-            if not df_tempo.empty:
-                try:
-                    if getattr(df_tempo["data_plot"].dt, "tz", None) is None:
-                        df_tempo["data_plot"] = df_tempo["data_plot"].dt.tz_localize("UTC")
-                    df_tempo["data_plot"] = df_tempo["data_plot"].dt.tz_convert(FUSO_BRASIL)
-                except Exception:
-                    pass
-                df_tempo["data_plot"] = df_tempo["data_plot"].dt.normalize()
+            df_tempo = df_tempo.dropna(subset=["data_timeline"]).copy()
 
             if df_tempo.empty:
                 st.info("Não há datas válidas para montar a linha do tempo.")
             else:
-                amplitude_dias = int((df_tempo["data_plot"].max() - df_tempo["data_plot"].min()).days)
+                df_tempo["data_plot"] = df_tempo["data_timeline"].dt.floor("D")
+                data_min = df_tempo["data_plot"].min()
+                data_max = df_tempo["data_plot"].max()
+                amplitude_dias = int((data_max - data_min).days) if pd.notna(data_min) and pd.notna(data_max) else 0
+                dias_com_registro = int(df_tempo["data_plot"].nunique())
+                sem_data_original = 0
+                if camada_tempo == "Por notícia" and base_data_tempo == "Data de coleta" and "data_coleta" in df_noticias_filtrado_sem_limite.columns:
+                    sem_data_original = int(pd.to_datetime(df_noticias_filtrado_sem_limite["data_coleta"], errors="coerce").isna().sum())
+
+                d1, d2, d3, d4 = st.columns(4)
+                d1.metric("Primeira data na série", data_min.strftime("%Y-%m-%d") if pd.notna(data_min) else "—")
+                d2.metric("Última data na série", data_max.strftime("%Y-%m-%d") if pd.notna(data_max) else "—")
+                d3.metric("Dias com registro", dias_com_registro)
+                d4.metric("Amplitude", f"{amplitude_dias} dias")
+
                 if base_data_tempo == "Data de publicação" and amplitude_dias > 370:
                     st.warning(
-                        "A linha do tempo por data de publicação ficou muito ampla. "
-                        "Isso geralmente indica datas antigas ou metadados contaminados capturados nas páginas. "
-                        "Para acompanhar o monitoramento, prefira 'Data de coleta'."
+                        "A série por data de publicação ficou muito ampla. Isso costuma indicar metadados antigos ou imprecisos nas páginas. "
+                        "Para avaliar o funcionamento do observatório, use 'Data de coleta'."
+                    )
+                elif base_data_tempo == "Data de coleta" and dias_com_registro <= 2 and len(df_tempo) > 30:
+                    st.info(
+                        "A maior parte dos registros entrou na base em poucos dias de coleta. Isso é esperado quando o pipeline é executado em lote. "
+                        "Para reconstruir a cronologia substantiva dos acontecimentos, use 'Data de publicação' depois de validar/backfill dessa coluna."
                     )
 
-                col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 2])
+                with st.expander("Diagnóstico das datas usadas", expanded=False):
+                    diag_origem = (
+                        df_tempo["origem_data_linha"].value_counts(dropna=False)
+                        .rename_axis("Origem da data")
+                        .reset_index(name="Registros")
+                    ) if "origem_data_linha" in df_tempo.columns else pd.DataFrame()
+                    st.write(
+                        f"Unidade: **{camada_tempo}** · Data: **{base_data_tempo}**"
+                        + (f" · Marco do caso: **{marco_caso}**" if marco_caso else "")
+                    )
+                    if sem_data_original:
+                        st.warning(f"Há {sem_data_original} registro(s) sem data_coleta válida no recorte filtrado.")
+                    if not diag_origem.empty:
+                        st.dataframe(diag_origem, use_container_width=True, hide_index=True)
+                    cols_diag = [c for c in [
+                        "id", "caso_id", "titulo", "titulo_representativo", "fonte", "fonte_representativa",
+                        "data_publicacao", "data_publicacao_min", "data_publicacao_max",
+                        "data_coleta", "primeira_coleta", "ultima_coleta", "data_timeline", "origem_data_linha"
+                    ] if c in df_tempo.columns]
+                    st.dataframe(df_tempo[cols_diag].head(100), use_container_width=True, hide_index=True)
+
+                col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([1, 1.1, 1.6, 1.1])
 
                 with col_ctrl1:
                     granularidade = st.selectbox(
                         "Granularidade",
                         options=["Diária", "Semanal", "Mensal"],
                         index=0,
-                        key="timeline_granularidade"
+                        key="timeline_granularidade_v4"
                     )
 
                 with col_ctrl2:
@@ -1907,33 +1994,115 @@ else:
                             "Alertas por categorias"
                         ],
                         index=0,
-                        key="timeline_modo"
+                        key="timeline_modo_v4"
                     )
 
                 with col_ctrl3:
                     fontes_disponiveis = sorted(
-                        [f for f in df_tempo["fonte"].dropna().unique().tolist() if str(f).strip()]
+                        [f for f in df_tempo.get("fonte", pd.Series(dtype=str)).dropna().unique().tolist() if str(f).strip()]
                     )
                     rotulo_portal = "Filtrar portais" if camada_tempo == "Por notícia" else "Filtrar portal representativo do caso"
                     filtro_fontes = st.multiselect(
                         rotulo_portal,
                         options=fontes_disponiveis,
                         default=[],
-                        key="timeline_fontes",
+                        key="timeline_fontes_v4",
                         placeholder="Selecione portais"
+                    )
+
+                with col_ctrl4:
+                    preencher_zeros = st.checkbox(
+                        "Preencher dias sem registro",
+                        value=False,
+                        key="timeline_preencher_zeros_v4",
+                        help="Útil para séries curtas. Em séries longas, pode poluir a visualização."
                     )
 
                 if filtro_fontes:
                     df_tempo = df_tempo[df_tempo["fonte"].isin(filtro_fontes)]
 
                 if df_tempo.empty:
-                    st.info("Os filtros atuais não retornaram registros.")
+                    st.info("Os filtros atuais não retornaram dados para a linha do tempo.")
                 else:
+                    freq_map = {"Diária": "D", "Semanal": "W-MON", "Mensal": "MS"}
+                    freq_escolhida = freq_map[granularidade]
+
+                    def _rotulo_data_para_tabela(s: pd.Series) -> pd.Series:
+                        if granularidade == "Mensal":
+                            return pd.to_datetime(s).dt.strftime("%Y-%m")
+                        return pd.to_datetime(s).dt.strftime("%Y-%m-%d")
+
+                    def _completar_serie_unica(serie: pd.DataFrame) -> pd.DataFrame:
+                        if serie.empty or not preencher_zeros or amplitude_dias > 370:
+                            return serie
+                        intervalo = pd.date_range(
+                            start=serie["data_plot"].min(),
+                            end=serie["data_plot"].max(),
+                            freq=freq_escolhida,
+                            tz=getattr(serie["data_plot"].dt, "tz", None)
+                        )
+                        return (
+                            serie.set_index("data_plot")
+                            .reindex(intervalo, fill_value=0)
+                            .rename_axis("data_plot")
+                            .reset_index()
+                        )
+
+                    def preparar_serie_unica(df_base: pd.DataFrame) -> pd.DataFrame:
+                        serie = (
+                            df_base
+                            .groupby(pd.Grouper(key="data_plot", freq=freq_escolhida))
+                            .size()
+                            .rename("Quantidade")
+                            .reset_index()
+                        )
+                        serie = _completar_serie_unica(serie)
+                        serie["data_str"] = _rotulo_data_para_tabela(serie["data_plot"])
+                        return serie
+
+                    def preparar_serie_categoria(df_base: pd.DataFrame, coluna: str, nome_coluna: str) -> pd.DataFrame:
+                        df_aux = df_base.copy()
+                        if coluna not in df_aux.columns:
+                            return pd.DataFrame(columns=["data_plot", nome_coluna, "Quantidade", "data_str"])
+                        df_aux[coluna] = df_aux[coluna].fillna("Não informado").astype(str).str.strip()
+                        df_aux.loc[df_aux[coluna] == "", coluna] = "Não informado"
+                        serie = (
+                            df_aux
+                            .groupby([pd.Grouper(key="data_plot", freq=freq_escolhida), coluna])
+                            .size()
+                            .reset_index(name="Quantidade")
+                            .rename(columns={coluna: nome_coluna})
+                        )
+                        if serie.empty:
+                            return serie
+
+                        if preencher_zeros and amplitude_dias <= 370:
+                            categorias = sorted(serie[nome_coluna].dropna().unique().tolist())
+                            datas = pd.date_range(
+                                start=serie["data_plot"].min(),
+                                end=serie["data_plot"].max(),
+                                freq=freq_escolhida,
+                                tz=getattr(serie["data_plot"].dt, "tz", None)
+                            )
+                            grade = pd.MultiIndex.from_product([datas, categorias], names=["data_plot", nome_coluna])
+                            serie = (
+                                serie.set_index(["data_plot", nome_coluna])
+                                .reindex(grade, fill_value=0)
+                                .reset_index()
+                            )
+
+                        serie["data_str"] = _rotulo_data_para_tabela(serie["data_plot"])
+                        return serie
+
                     if modo_linha == "Alertas adaptativos":
                         if granularidade != "Diária":
                             st.info("Os alertas adaptativos estão habilitados apenas para a granularidade diária.")
+                        elif amplitude_dias > 370:
+                            st.warning("A série está muito ampla para alertas diários legíveis. Use granularidade semanal/mensal ou data de coleta.")
                         else:
-                            serie_alerta = preparar_serie_alerta_total(df_tempo)
+                            df_alert_base = df_tempo.copy()
+                            df_alert_base["data_coleta"] = df_alert_base["data_plot"]
+                            serie_alerta = preparar_serie_alerta_total(df_alert_base)
                             df_alerta, meta_alerta = calcular_alertas_adaptativos(serie_alerta)
 
                             if not meta_alerta["ativo"]:
@@ -1944,333 +2113,156 @@ else:
                             else:
                                 fig_alerta = plotar_alertas_adaptativos(df_alerta, meta_alerta)
                                 fig_alerta.update_layout(
-                                    title=f"Alertas adaptativos — {unidade_tempo} — {meta_alerta['modelo']}",
+                                    title=f"Alertas adaptativos dos {unidade_tempo} — {meta_alerta['modelo']}",
                                     yaxis_title=f"Número de {unidade_tempo}"
                                 )
-                                st.plotly_chart(
-                                    fig_alerta,
-                                    use_container_width=True,
-                                    key=f"plot_alertas_adaptativos_{camada_tempo}_{base_data_tempo}"
-                                )
+                                st.plotly_chart(fig_alerta, use_container_width=True, key="plot_alertas_adaptativos_v4")
 
                                 ultimo_valido = df_alerta.dropna(subset=["esperado"]).copy()
                                 if not ultimo_valido.empty:
                                     ultima = ultimo_valido.iloc[-1]
                                     total_alertas = int(df_alerta["alerta"].sum())
-
                                     c1, c2, c3, c4 = st.columns(4)
                                     c1.metric("Modelo ativo", meta_alerta["modelo"])
                                     c2.metric("Observado mais recente", int(ultima["Quantidade"]))
                                     c3.metric("Esperado mais recente", round(float(ultima["esperado"]), 2))
                                     c4.metric("Dias em alerta", total_alertas)
-
                                 st.caption(meta_alerta["descricao"])
-
-                                with st.expander("Ver tabela do indicador adaptativo"):
-                                    tabela_alerta = df_alerta.copy()
-                                    tabela_alerta["Alerta"] = np.where(tabela_alerta["alerta"], "Sim", "Não")
-                                    st.dataframe(
-                                        tabela_alerta[
-                                            ["data_str", "Quantidade", "esperado", "limite_superior", "Alerta"]
-                                        ].rename(columns={
-                                            "data_str": "Data",
-                                            "Quantidade": f"{unidade_tempo.capitalize()} observadas",
-                                            "esperado": "Esperado",
-                                            "limite_superior": "Limite superior"
-                                        }),
-                                        use_container_width=True,
-                                        hide_index=True
-                                    )
 
                     elif modo_linha == "Alertas por categorias":
                         if granularidade != "Diária":
                             st.info("Os alertas por categoria estão habilitados apenas para a granularidade diária.")
+                        elif amplitude_dias > 370:
+                            st.warning("A série está muito ampla para alertas diários por categoria. Use data de coleta ou reduza o recorte.")
                         else:
-                            categorias_disp = sorted(
-                                [c for c in df_tempo["categoria_publica"].dropna().astype(str).unique().tolist() if c.strip()]
-                            )
-
+                            categorias_disp = sorted([
+                                c for c in df_tempo.get("categoria_publica", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+                                if c.strip()
+                            ])
                             categorias_sel = st.multiselect(
                                 "Selecione as categorias para comparar",
                                 options=categorias_disp,
                                 default=categorias_disp[:3] if len(categorias_disp) >= 3 else categorias_disp,
-                                key="categorias_alerta_timeline",
+                                key="categorias_alerta_timeline_v4",
                                 placeholder="Selecione categorias"
                             )
-
                             if not categorias_sel:
                                 st.info("Selecione ao menos uma categoria.")
                             else:
-                                resultados = []
-                                ymax_global = 0.0
-
-                                for cat in categorias_sel:
+                                for i, cat in enumerate(categorias_sel):
+                                    st.markdown(f"### {cat}")
                                     df_cat = df_tempo[df_tempo["categoria_publica"] == cat].copy()
+                                    df_cat["data_coleta"] = df_cat["data_plot"]
                                     serie_cat = preparar_serie_alerta_total(df_cat)
                                     df_alerta_cat, meta_cat = calcular_alertas_adaptativos(serie_cat)
-
-                                    if not df_alerta_cat.empty:
-                                        max_local = pd.concat(
-                                            [
-                                                df_alerta_cat["Quantidade"],
-                                                df_alerta_cat["limite_superior"].fillna(0)
-                                            ],
-                                            axis=0
-                                        ).max()
-                                        ymax_global = max(ymax_global, float(max_local))
-
-                                    resultados.append((cat, df_alerta_cat, meta_cat))
-
-                                if ymax_global <= 0:
-                                    ymax_global = 1.0
-                                else:
-                                    ymax_global *= 1.10
-
-                                resumo_alertas = []
-
-                                for i, (cat, df_alerta_cat, meta_cat) in enumerate(resultados):
-                                    st.markdown(f"### {cat}")
-
                                     if not meta_cat["ativo"]:
                                         st.warning(
                                             f"{meta_cat['descricao']} "
                                             f"Atualmente há {meta_cat['pontos_validos']} pontos diários para esta categoria."
                                         )
                                         continue
-
                                     fig_cat = plotar_alertas_adaptativos_categoria(
                                         df_alerta_cat,
                                         meta_cat,
                                         titulo_categoria=f"{cat} — {unidade_tempo}",
-                                        ymax=ymax_global
+                                        ymax=None
                                     )
                                     fig_cat.update_layout(yaxis_title=f"Número de {unidade_tempo}")
-
-                                    st.plotly_chart(
-                                        fig_cat,
-                                        use_container_width=True,
-                                        key=f"plot_alerta_categoria_{camada_tempo}_{i}_{cat}"
-                                    )
-
-                                    ultimo_valido = df_alerta_cat.dropna(subset=["esperado"]).copy()
-                                    total_alertas_cat = int(df_alerta_cat["alerta"].sum())
-
-                                    if not ultimo_valido.empty:
-                                        ultima = ultimo_valido.iloc[-1]
-                                        c1, c2, c3, c4 = st.columns(4)
-                                        c1.metric("Modelo ativo", meta_cat["modelo"])
-                                        c2.metric("Observado mais recente", int(ultima["Quantidade"]))
-                                        c3.metric("Esperado mais recente", round(float(ultima["esperado"]), 2))
-                                        c4.metric("Dias em alerta", total_alertas_cat)
-
-                                    resumo_alertas.append({
-                                        "Categoria pública": cat,
-                                        "Unidade": unidade_tempo,
-                                        "Modelo": meta_cat["modelo"],
-                                        "Dias em alerta": total_alertas_cat
-                                    })
-
-                                if resumo_alertas:
-                                    with st.expander("Resumo comparativo dos alertas por categoria"):
-                                        st.dataframe(
-                                            pd.DataFrame(resumo_alertas).sort_values("Dias em alerta", ascending=False),
-                                            use_container_width=True,
-                                            hide_index=True
-                                        )
+                                    st.plotly_chart(fig_cat, use_container_width=True, key=f"plot_alerta_categoria_v4_{i}")
 
                     else:
-                        freq_map = {
-                            "Diária": "D",
-                            "Semanal": "W-MON",
-                            "Mensal": "MS"
-                        }
-                        freq_escolhida = freq_map[granularidade]
-
-                        def preparar_serie_unica(df_base: pd.DataFrame, freq: str, granularidade_txt: str) -> pd.DataFrame:
-                            serie = (
-                                df_base
-                                .set_index("data_plot")
-                                .resample(freq)
-                                .size()
-                                .rename("Quantidade")
-                                .reset_index()
-                            )
-
-                            # Só preenche lacunas quando a amplitude é razoável; isso evita linhas do tempo
-                            # ilegíveis quando metadados de publicação aparecem como anos antigos.
-                            if not serie.empty and amplitude_dias <= 370:
-                                intervalo = pd.date_range(
-                                    start=serie["data_plot"].min(),
-                                    end=serie["data_plot"].max(),
-                                    freq=freq,
-                                    tz=getattr(serie["data_plot"].dt, "tz", None)
-                                )
-                                serie = (
-                                    serie
-                                    .set_index("data_plot")
-                                    .reindex(intervalo, fill_value=0)
-                                    .rename_axis("data_plot")
-                                    .reset_index()
-                                )
-
-                            if granularidade_txt == "Mensal":
-                                serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m")
-                            else:
-                                serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m-%d")
-
-                            return serie
-
-                        def preparar_serie_categoria(df_base: pd.DataFrame, freq: str, coluna: str, nome_coluna: str,
-                                                     granularidade_txt: str) -> pd.DataFrame:
-                            df_aux = df_base.copy()
-                            df_aux[coluna] = df_aux[coluna].fillna("Não informado").astype(str).str.strip()
-                            df_aux.loc[df_aux[coluna] == "", coluna] = "Não informado"
-
-                            serie = (
-                                df_aux
-                                .groupby([pd.Grouper(key="data_plot", freq=freq), coluna])
-                                .size()
-                                .reset_index(name="Quantidade")
-                                .rename(columns={coluna: nome_coluna})
-                            )
-
-                            if serie.empty:
-                                return serie
-
-                            if amplitude_dias <= 370:
-                                categorias = sorted(serie[nome_coluna].dropna().unique().tolist())
-                                datas = pd.date_range(
-                                    start=serie["data_plot"].min(),
-                                    end=serie["data_plot"].max(),
-                                    freq=freq,
-                                    tz=getattr(serie["data_plot"].dt, "tz", None)
-                                )
-
-                                grade = pd.MultiIndex.from_product(
-                                    [datas, categorias],
-                                    names=["data_plot", nome_coluna]
-                                )
-
-                                serie = (
-                                    serie
-                                    .set_index(["data_plot", nome_coluna])
-                                    .reindex(grade, fill_value=0)
-                                    .reset_index()
-                                )
-
-                            if granularidade_txt == "Mensal":
-                                serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m")
-                            else:
-                                serie["data_str"] = pd.to_datetime(serie["data_plot"]).dt.strftime("%Y-%m-%d")
-
-                            return serie
-
                         if modo_linha == "Linha única":
-                            serie_tempo = preparar_serie_unica(df_tempo, freq_escolhida, granularidade)
-                            fig_tempo = px.line(
-                                serie_tempo,
-                                x="data_plot",
-                                y="Quantidade",
-                                markers=True,
-                                title=f"Evolução temporal dos {unidade_tempo} ({granularidade.lower()})"
-                            )
-                            tabela_exibicao = serie_tempo.copy()
+                            tabela_exibicao = preparar_serie_unica(df_tempo)
+                            if granularidade == "Diária":
+                                fig_tempo = px.bar(
+                                    tabela_exibicao,
+                                    x="data_plot",
+                                    y="Quantidade",
+                                    title=f"Evolução temporal dos {unidade_tempo} ({granularidade.lower()})"
+                                )
+                            else:
+                                fig_tempo = px.line(
+                                    tabela_exibicao,
+                                    x="data_plot",
+                                    y="Quantidade",
+                                    markers=True,
+                                    title=f"Evolução temporal dos {unidade_tempo} ({granularidade.lower()})"
+                                )
 
                         elif modo_linha == "Por categorias":
-                            serie_tempo = preparar_serie_categoria(
-                                df_tempo,
-                                freq_escolhida,
-                                "categoria_publica",
-                                "Categoria pública",
-                                granularidade
+                            categorias_base = df_tempo["categoria_publica"].fillna("Não informado").astype(str)
+                            top_cats = categorias_base.value_counts().head(6).index.tolist()
+                            categorias_sel = st.multiselect(
+                                "Categorias na linha do tempo",
+                                options=sorted(categorias_base.unique().tolist()),
+                                default=top_cats,
+                                key="timeline_categorias_visiveis_v4"
                             )
+                            df_plot_base = df_tempo[df_tempo["categoria_publica"].fillna("Não informado").astype(str).isin(categorias_sel)] if categorias_sel else df_tempo.iloc[0:0]
+                            tabela_exibicao = preparar_serie_categoria(df_plot_base, "categoria_publica", "Categoria pública")
                             fig_tempo = px.line(
-                                serie_tempo,
+                                tabela_exibicao,
                                 x="data_plot",
                                 y="Quantidade",
                                 color="Categoria pública",
                                 markers=True,
                                 title=f"Evolução temporal dos {unidade_tempo} por categoria pública ({granularidade.lower()})"
                             )
-                            tabela_exibicao = serie_tempo.copy()
 
                         else:
-                            serie_tempo = preparar_serie_categoria(
-                                df_tempo,
-                                freq_escolhida,
-                                "fonte",
-                                "Portal" if camada_tempo == "Por notícia" else "Portal representativo",
-                                granularidade
+                            coluna_dim = "fonte"
+                            nome_dim = "Portal" if camada_tempo == "Por notícia" else "Portal representativo"
+                            fontes_base = df_tempo[coluna_dim].fillna("Não informado").astype(str)
+                            top_fontes = fontes_base.value_counts().head(8).index.tolist()
+                            fontes_sel_plot = st.multiselect(
+                                f"{nome_dim}s na linha do tempo",
+                                options=sorted(fontes_base.unique().tolist()),
+                                default=top_fontes,
+                                key="timeline_fontes_visiveis_v4"
                             )
-                            cor_coluna = "Portal" if camada_tempo == "Por notícia" else "Portal representativo"
+                            df_plot_base = df_tempo[df_tempo[coluna_dim].fillna("Não informado").astype(str).isin(fontes_sel_plot)] if fontes_sel_plot else df_tempo.iloc[0:0]
+                            tabela_exibicao = preparar_serie_categoria(df_plot_base, coluna_dim, nome_dim)
                             fig_tempo = px.line(
-                                serie_tempo,
+                                tabela_exibicao,
                                 x="data_plot",
                                 y="Quantidade",
-                                color=cor_coluna,
+                                color=nome_dim,
                                 markers=True,
-                                title=f"Evolução temporal dos {unidade_tempo} por {cor_coluna.lower()} ({granularidade.lower()})"
+                                title=f"Evolução temporal dos {unidade_tempo} por {nome_dim.lower()} ({granularidade.lower()})"
                             )
-                            tabela_exibicao = serie_tempo.copy()
 
-                        fig_tempo.update_layout(
-                            xaxis_title="Data",
-                            yaxis_title=f"Número de {unidade_tempo}",
-                            hovermode="x unified"
-                        )
-                        fig_tempo.update_xaxes(tickangle=-35)
+                        if tabela_exibicao.empty:
+                            st.info("Não há dados suficientes para o gráfico com os filtros atuais.")
+                        else:
+                            fig_tempo.update_layout(
+                                xaxis_title="Data",
+                                yaxis_title=f"Número de {unidade_tempo}",
+                                hovermode="x unified"
+                            )
+                            fig_tempo.update_xaxes(tickangle=-25)
+                            fig_tempo.update_yaxes(rangemode="tozero", tickformat="d")
 
-                        st.plotly_chart(
-                            fig_tempo,
-                            use_container_width=True,
-                            key=f"plot_timeline_{camada_tempo}_{base_data_tempo}_{granularidade}_{modo_linha}_{'_'.join(filtro_fontes) if filtro_fontes else 'todos'}"
-                        )
+                            st.plotly_chart(
+                                fig_tempo,
+                                use_container_width=True,
+                                key=f"plot_timeline_v4_{camada_tempo}_{base_data_tempo}_{marco_caso}_{granularidade}_{modo_linha}_{preencher_zeros}"
+                            )
 
-                        if modo_linha == "Linha única":
                             total_periodo = int(tabela_exibicao["Quantidade"].sum())
                             pico = int(tabela_exibicao["Quantidade"].max()) if not tabela_exibicao.empty else 0
-                            periodos_com_registro = int((tabela_exibicao["Quantidade"] > 0).sum())
+                            periodos_com_registro = int((tabela_exibicao.groupby("data_str")["Quantidade"].sum() > 0).sum())
 
                             c1, c2, c3 = st.columns(3)
                             c1.metric("Períodos com registro", periodos_com_registro)
                             c2.metric(f"Pico de {unidade_tempo_singular}", pico)
                             c3.metric(f"Total de {unidade_tempo}", total_periodo)
-                        else:
-                            total_periodo = int(tabela_exibicao["Quantidade"].sum())
-                            pico = int(tabela_exibicao["Quantidade"].max()) if not tabela_exibicao.empty else 0
-                            n_series = int(tabela_exibicao.iloc[:, 1].nunique()) if not tabela_exibicao.empty else 0
 
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("Séries exibidas", n_series)
-                            c2.metric(f"Pico em uma série ({unidade_tempo})", pico)
-                            c3.metric(f"Total de {unidade_tempo}", total_periodo)
-
-                        with st.expander("Ver tabela da série temporal"):
-                            if modo_linha == "Linha única":
-                                st.dataframe(
-                                    tabela_exibicao[["data_str", "Quantidade"]].rename(
-                                        columns={"data_str": "Data", "Quantidade": unidade_tempo.capitalize()}
-                                    ),
-                                    use_container_width=True,
-                                    hide_index=True
+                            with st.expander("Ver tabela da série temporal"):
+                                cols_tab = ["data_str"] + [c for c in tabela_exibicao.columns if c not in ["data_plot", "data_str", "Quantidade"]] + ["Quantidade"]
+                                tabela_vis = tabela_exibicao[cols_tab].rename(
+                                    columns={"data_str": "Data", "Quantidade": unidade_tempo.capitalize()}
                                 )
-                            elif modo_linha == "Por categorias":
-                                st.dataframe(
-                                    tabela_exibicao[["data_str", "Categoria pública", "Quantidade"]].rename(
-                                        columns={"data_str": "Data", "Quantidade": unidade_tempo.capitalize()}
-                                    ),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                            else:
-                                coluna_portal_tabela = "Portal" if camada_tempo == "Por notícia" else "Portal representativo"
-                                st.dataframe(
-                                    tabela_exibicao[["data_str", coluna_portal_tabela, "Quantidade"]].rename(
-                                        columns={"data_str": "Data", "Quantidade": unidade_tempo.capitalize()}
-                                    ),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
+                                st.dataframe(tabela_vis, use_container_width=True, hide_index=True)
 
     with st.expander("📊 Estatística dos Portais"):
         stats_fonte = df_noticias["fonte"].value_counts().reset_index()
