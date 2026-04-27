@@ -48,23 +48,20 @@ def get_engine():
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
-    """
-    Constrói a query de forma segura utilizando bind parameters.
-    Impede SQL Injection e problemas de concatenação na cláusula WHERE.
-    """
     if periodo_sql == "tudo":
         query = text("""
                      SELECT *
                      FROM noticias
+                     WHERE falso_positivo = FALSE
                      ORDER BY data_coleta DESC LIMIT :limite
                      """)
         params = {"limite": int(limite)}
     else:
-        # Assumindo que periodo_sql vem do dicionário (ex: "30 days")
         query = text("""
                      SELECT *
                      FROM noticias
                      WHERE data_coleta >= NOW() - CAST(:intervalo AS INTERVAL)
+                       AND falso_positivo = FALSE
                      ORDER BY data_coleta DESC LIMIT :limite
                      """)
         params = {
@@ -2426,3 +2423,70 @@ else:
             )
         else:
             st.info("Ainda não há entidades extraídas para exibir.")
+
+        # ---------------------------------------------------------
+        # ABA DE CURADORIA DE DADOS (ADMIN)
+        # ---------------------------------------------------------
+        st.divider()
+        with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
+            st.markdown(
+                "Marque a caixa abaixo para ocultar fofocas, ruídos ou erros do pipeline. As notícias marcadas sumirão dos gráficos, mas continuarão salvas no banco para treinamentos futuros de IA.")
+
+            # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
+            query_curadoria = text("""
+                                   SELECT id, data_coleta, portal, titulo, falso_positivo
+                                   FROM noticias
+                                   WHERE falso_positivo = FALSE
+                                   ORDER BY data_coleta DESC LIMIT 200
+                                   """)
+
+            # Conecta e puxa os dados
+            engine = get_engine()
+            df_para_curar = pd.read_sql(query_curadoria, engine)
+
+            if not df_para_curar.empty:
+                # Transforma em um editor interativo
+                df_editado = st.data_editor(
+                    df_para_curar,
+                    column_config={
+                        "falso_positivo": st.column_config.CheckboxColumn(
+                            "É Falso Positivo? 🗑️",
+                            help="Marque para ocultar do painel",
+                            default=False,
+                        ),
+                        "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
+                        "portal": "Fonte",
+                        "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
+                    },
+                    disabled=["id", "data_coleta", "portal", "titulo"],  # Protege os textos contra edição acidental
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_curadoria"
+                )
+
+                # Botão de Salvar
+                if st.button("Salvar Curadoria", type="primary"):
+                    # Separa apenas as linhas em que a caixinha foi marcada (mudou para True)
+                    modificados = df_editado[df_editado["falso_positivo"] == True]
+
+                    if not modificados.empty:
+                        ids_para_ocultar = modificados["id"].tolist()
+
+                        # Atualiza o banco de dados
+                        update_query = text("""
+                                            UPDATE noticias
+                                            SET falso_positivo = TRUE
+                                            WHERE id = ANY (:ids)
+                                            """)
+
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(update_query, {"ids": ids_para_ocultar})
+                            st.success(f"{len(ids_para_ocultar)} notícias removidas com sucesso! Atualizando painel...")
+                            st.rerun()  # Recarrega a página para atualizar os gráficos
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar o banco: {e}")
+                    else:
+                        st.info("Nenhuma caixinha foi marcada. Nada a salvar.")
+            else:
+                st.success("Não há notícias pendentes de curadoria neste período!")
