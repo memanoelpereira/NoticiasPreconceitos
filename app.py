@@ -2434,7 +2434,7 @@ else:
 
         # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
         query_curadoria = text("""
-                               SELECT id, data_coleta, portal, titulo, falso_positivo
+                               SELECT id, data_coleta, fonte, titulo, falso_positivo
                                FROM noticias
                                WHERE falso_positivo = FALSE
                                ORDER BY data_coleta DESC LIMIT 200
@@ -2461,10 +2461,10 @@ else:
                         default=False,
                     ),
                     "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
-                    "portal": "Fonte",
+                    "portal": "fonte",
                     "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
                 },
-                disabled=["id", "data_coleta", "portal", "titulo"],  # Protege os textos contra edição acidental
+                disabled=["id", "data_coleta", "fonte", "titulo"],  # Protege os textos contra edição acidental
                 hide_index=True,
                 use_container_width=True,
                 key="editor_curadoria"
