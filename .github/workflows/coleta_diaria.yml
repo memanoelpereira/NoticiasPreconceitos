@@ -1,0 +1,41 @@
+name: Coleta de Notícias Automática
+
+on:
+  # Permite que você clique num botão no GitHub para rodar manualmente se quiser
+  workflow_dispatch: 
+  
+  # Agenda a execução automática (Cron Job)
+  schedule:
+    # Este exemplo roda a cada 6 horas (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 */6 * * *'
+
+jobs:
+  executar-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar o repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Ou a versão que você costuma usar
+          cache: 'pip'
+
+      - name: Instalar dependências (Bibliotecas Python)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Instalar o motor de inteligência (SpaCy)
+        run: python -m spacy download pt_core_news_lg
+
+      - name: Instalar navegadores para o Scraper (Playwright)
+        run: playwright install chromium
+
+      - name: Rodar o Pipeline de Coleta
+        env:
+          # Aqui o GitHub injeta a sua senha de forma secreta e segura
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python pipeline_pesquisa.py
