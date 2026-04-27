@@ -1,5 +1,12 @@
+# Bibliotecas do Dashboard (app.py)
 streamlit>=1.36
 pandas>=2.1
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
 plotly>=5.20
+
+# Bibliotecas do Motor de Coleta e IA (pipeline_pesquisa.py)
+spacy>=3.7.0
+playwright>=1.42.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
