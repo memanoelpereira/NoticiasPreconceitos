@@ -2424,76 +2424,76 @@ else:
         else:
             st.info("Ainda não há entidades extraídas para exibir.")
 
-        # ---------------------------------------------------------
-        # ABA DE CURADORIA DE DADOS (ADMIN)
-        # ---------------------------------------------------------
-        st.divider()
-        with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
-            st.markdown(
-                "Marque a caixa abaixo para ocultar fofocas, ruídos ou erros do pipeline. As notícias marcadas sumirão dos gráficos, mas continuarão salvas no banco para treinamentos futuros de IA."
+    # ---------------------------------------------------------
+    # ABA DE CURADORIA DE DADOS (ADMIN)
+    # ---------------------------------------------------------
+    st.divider()
+    with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
+        st.markdown(
+            "Marque a caixa abaixo para ocultar fofocas, ruídos ou erros do pipeline. As notícias marcadas sumirão dos gráficos, mas continuarão salvas no banco para treinamentos futuros de IA."
+        )
+
+        # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
+        query_curadoria = text("""
+                               SELECT id, data_coleta, fonte, titulo, falso_positivo
+                               FROM noticias
+                               WHERE falso_positivo = FALSE
+                               ORDER BY data_coleta DESC LIMIT 200
+                               """)
+
+        # Conecta e puxa os dados de forma segura (SQLAlchemy 2.0+)
+        engine = get_engine()
+        try:
+            with engine.connect() as conn:
+                df_para_curar = pd.read_sql(query_curadoria, conn)
+        except Exception as e:
+            st.error(f"Erro real do banco de dados (desocultado): {e}")
+            st.stop()
+
+        if not df_para_curar.empty:
+            # Transforma em um editor interativo
+            df_editado = st.data_editor(
+                df_para_curar,
+                column_config={
+                    "falso_positivo": st.column_config.CheckboxColumn(
+                        "É Falso Positivo? 🗑️",
+                        help="Marque para ocultar do painel",
+                        default=False,
+                    ),
+                    "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
+                    "fonte": "Fonte da Notícia",  # <--- A correção principal está aqui
+                    "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
+                },
+                disabled=["id", "data_coleta", "fonte", "titulo"],  # Protege os textos
+                hide_index=True,
+                use_container_width=True,
+                key="editor_curadoria"
             )
 
-            # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
-            query_curadoria = text("""
-                                   SELECT id, data_coleta, fonte, titulo, falso_positivo
-                                   FROM noticias
-                                   WHERE falso_positivo = FALSE
-                                   ORDER BY data_coleta DESC LIMIT 200
-                                   """)
+            # Botão de Salvar
+            if st.button("Salvar Curadoria", type="primary"):
+                # Separa apenas as linhas em que a caixinha foi marcada
+                modificados = df_editado[df_editado["falso_positivo"] == True]
 
-            # Conecta e puxa os dados de forma segura (SQLAlchemy 2.0+)
-            engine = get_engine()
-            try:
-                with engine.connect() as conn:
-                    df_para_curar = pd.read_sql(query_curadoria, conn)
-            except Exception as e:
-                st.error(f"Erro real do banco de dados (desocultado): {e}")
-                st.stop()
+                if not modificados.empty:
+                    ids_para_ocultar = modificados["id"].tolist()
 
-            if not df_para_curar.empty:
-                # Transforma em um editor interativo
-                df_editado = st.data_editor(
-                    df_para_curar,
-                    column_config={
-                        "falso_positivo": st.column_config.CheckboxColumn(
-                            "É Falso Positivo? 🗑️",
-                            help="Marque para ocultar do painel",
-                            default=False,
-                        ),
-                        "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
-                        "fonte": "Fonte da Notícia",  # <--- A correção principal está aqui
-                        "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
-                    },
-                    disabled=["id", "data_coleta", "fonte", "titulo"],  # Protege os textos
-                    hide_index=True,
-                    use_container_width=True,
-                    key="editor_curadoria"
-                )
+                    # Atualiza o banco de dados
+                    update_query = text("""
+                                        UPDATE noticias
+                                        SET falso_positivo = TRUE
+                                        WHERE id = ANY (:ids)
+                                        """)
 
-                # Botão de Salvar
-                if st.button("Salvar Curadoria", type="primary"):
-                    # Separa apenas as linhas em que a caixinha foi marcada
-                    modificados = df_editado[df_editado["falso_positivo"] == True]
-
-                    if not modificados.empty:
-                        ids_para_ocultar = modificados["id"].tolist()
-
-                        # Atualiza o banco de dados
-                        update_query = text("""
-                                            UPDATE noticias
-                                            SET falso_positivo = TRUE
-                                            WHERE id = ANY (:ids)
-                                            """)
-
-                        try:
-                            with engine.begin() as conn:
-                                conn.execute(update_query, {"ids": ids_para_ocultar})
-                            st.success(
-                                f"{len(ids_para_ocultar)} notícias removidas com sucesso! Atualizando painel...")
-                            st.rerun()  # Recarrega a página para atualizar os gráficos
-                        except Exception as e:
-                            st.error(f"Erro ao atualizar o banco: {e}")
-                    else:
-                        st.info("Nenhuma caixinha foi marcada. Nada a salvar.")
-            else:
-                st.success("Não há notícias pendentes de curadoria neste período!")
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(update_query, {"ids": ids_para_ocultar})
+                        st.success(
+                            f"{len(ids_para_ocultar)} notícias removidas com sucesso! Atualizando painel...")
+                        st.rerun()  # Recarrega a página para atualizar os gráficos
+                    except Exception as e:
+                        st.error(f"Erro ao atualizar o banco: {e}")
+                else:
+                    st.info("Nenhuma caixinha foi marcada. Nada a salvar.")
+        else:
+            st.success("Não há notícias pendentes de curadoria neste período!")
