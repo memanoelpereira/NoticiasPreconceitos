@@ -2441,23 +2441,35 @@ else:
         senha_correta = st.secrets.get("ADMIN_PASSWORD", "senha_provisoria")
 
         # 2. Só exibe a tabela se a senha estiver correta
+        # 2. Verificação de Senha
         if senha_digitada == senha_correta:
-            st.success("Acesso autorizado!")
 
-            # Busca as últimas 200 notícias que AINDA NÃO foram marcadas como falso positivo
-            query_curadoria = text("""
-                                   SELECT id, data_coleta, fonte, titulo, falso_positivo
-                                   FROM noticias
-                                   WHERE falso_positivo = FALSE
-                                   ORDER BY data_coleta DESC LIMIT 200
-                                   """)
+            # --- CRIAMOS UMA BUSCA EXCLUSIVA PARA A CURADORIA ---
+            termo_curadoria = st.text_input("🔍 Buscar notícia específica para curadoria:", key="busca_admin_cur")
 
-            engine = get_engine()
+            if termo_curadoria:
+                query_curadoria = text("""
+                            SELECT id, data_coleta, fonte, titulo, falso_positivo
+                            FROM noticias
+                            WHERE falso_positivo = FALSE
+                              AND (titulo ILIKE :termo OR fonte ILIKE :termo)
+                            ORDER BY data_coleta DESC LIMIT 100
+                        """)
+                params_curadoria = {"termo": f"%{termo_curadoria}%"}
+            else:
+                query_curadoria = text("""
+                            SELECT id, data_coleta, fonte, titulo, falso_positivo
+                            FROM noticias
+                            WHERE falso_positivo = FALSE
+                            ORDER BY data_coleta DESC LIMIT 100
+                        """)
+                params_curadoria = {}
+
             try:
                 with engine.connect() as conn:
-                    df_para_curar = pd.read_sql(query_curadoria, conn)
+                    df_para_curar = pd.read_sql(query_curadoria, conn, params=params_curadoria)
             except Exception as e:
-                st.error(f"Erro real do banco de dados (desocultado): {e}")
+                st.error(f"Erro ao carregar dados para curadoria: {e}")
                 st.stop()
 
             if not df_para_curar.empty:
@@ -2547,13 +2559,18 @@ else:
                 st.stop()
             st.markdown("Selecione as notícias na tabela para agrupá-las ou separá-las.")
 
-            # TRUQUE DE MESTRE: Chave dinâmica para forçar a limpeza visual da tabela
-            # TRUQUE DE MESTRE: Chave dinâmica para forçar a limpeza visual da tabela
+  
             if "chave_gestao" not in st.session_state:
                 st.session_state["chave_gestao"] = 0
 
-            # --- NOVA LÓGICA DE FILTRO INTEGRADO ---
-            if busca_texto:
+            # --- CRIAMOS UMA BUSCA EXCLUSIVA PARA A GESTÃO ---
+            col_busca, col_limite = st.columns([3, 1])
+            with col_busca:
+                termo_gestao = st.text_input("🔍 Filtrar casos por palavra-chave:", key="busca_admin_gest")
+            with col_limite:
+                limite_busca = st.selectbox("Limite de busca:", options=[50, 200, 500, 1000, 2000], index=1)
+
+            if termo_gestao:
                 query_casos = text("""
                                 SELECT id, data_coleta, fonte, titulo, caso_id 
                                 FROM noticias 
@@ -2561,7 +2578,7 @@ else:
                                   AND (titulo ILIKE :termo OR fonte ILIKE :termo)
                                 ORDER BY data_coleta DESC LIMIT :limite
                             """)
-                params_gestao = {"limite": limite_busca, "termo": f"%{busca_texto}%"}
+                params_gestao = {"limite": limite_busca, "termo": f"%{termo_gestao}%"}
             else:
                 query_casos = text("""
                                 SELECT id, data_coleta, fonte, titulo, caso_id 
