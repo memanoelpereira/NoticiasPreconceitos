@@ -2565,7 +2565,6 @@ else:
 
                     with col1:
                         if st.button("🔗 Unificar no Primeiro Caso", type="primary"):
-                            # Pega o ID do caso da primeira notícia selecionada (Referência)
                             id_mestre = selecionados.iloc[0]["caso_id"]
 
                             try:
@@ -2575,7 +2574,12 @@ else:
                                         {"mestre": id_mestre, "ids": ids_para_atualizar}
                                     )
                                 st.success("Agrupamento realizado com sucesso!")
+
+                                # LIMPEZA DA SELEÇÃO ANTES DE RECARREGAR
+                                if "tabela_casos_nativa" in st.session_state:
+                                    del st.session_state["tabela_casos_nativa"]
                                 st.rerun()
+
                             except Exception as e:
                                 st.error(f"Erro na transação: {e}")
 
@@ -2592,7 +2596,12 @@ else:
                                         {"novo": novo_id_seguro, "ids": ids_para_atualizar}
                                     )
                                 st.success("Notícias isoladas em um novo grupo!")
+
+                                # LIMPEZA DA SELEÇÃO ANTES DE RECARREGAR
+                                if "tabela_casos_nativa" in st.session_state:
+                                    del st.session_state["tabela_casos_nativa"]
                                 st.rerun()
+
                             except Exception as e:
                                 st.error(f"Erro na transação: {e}")
                 else:
