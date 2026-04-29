@@ -56,6 +56,20 @@ def garantir_colunas_curadoria_casos(engine) -> None:
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
+        conn.execute(text("""
+            UPDATE noticias
+            SET data_referencia = COALESCE(data_publicacao, data_coleta),
+                origem_data_referencia = CASE
+                    WHEN data_publicacao IS NOT NULL THEN 'publicacao'
+                    WHEN data_coleta IS NOT NULL THEN 'coleta'
+                    ELSE 'indefinida'
+                END
+            WHERE data_referencia IS NULL
+               OR origem_data_referencia IS NULL
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)"))
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
@@ -64,16 +78,16 @@ def _build_noticias_query(periodo_sql: str, limite: int):
                      SELECT *
                      FROM noticias
                      WHERE falso_positivo = FALSE
-                     ORDER BY data_coleta DESC LIMIT :limite
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
                      """)
         params = {"limite": int(limite)}
     else:
         query = text("""
                      SELECT *
                      FROM noticias
-                     WHERE data_coleta >= NOW() - CAST(:intervalo AS INTERVAL)
+                     WHERE COALESCE(data_referencia, data_publicacao, data_coleta) >= NOW() - CAST(:intervalo AS INTERVAL)
                        AND falso_positivo = FALSE
-                     ORDER BY data_coleta DESC LIMIT :limite
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
                      """)
         params = {
             "limite": int(limite),
@@ -97,11 +111,11 @@ def carregar_dados(periodo_sql: str, limite: int):
                         SELECT id
                         FROM noticias
                         {where_clause}
-                        ORDER BY data_coleta DESC
+                        ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
                         LIMIT :limite
                     ) n ON e.noticia_id = n.id
                 """.format(
-                    where_clause="" if periodo_sql == "tudo" else f"WHERE data_coleta >= NOW() - INTERVAL '{periodo_sql}'"
+                    where_clause="" if periodo_sql == "tudo" else f"WHERE COALESCE(data_referencia, data_publicacao, data_coleta) >= NOW() - INTERVAL '{periodo_sql}'"
                 )),
                 conn,
                 params={"limite": int(limite)}
@@ -491,6 +505,19 @@ def enriquecer_dataframe_analitico(df: pd.DataFrame) -> pd.DataFrame:
         fallback_cat = out.apply(categorizar_publicamente, axis=1)
         out = _preencher_coluna_por_fallback(out, "categoria_publica", fallback_cat)
 
+    if "data_publicacao" not in out.columns:
+        out["data_publicacao"] = pd.NaT
+    if "data_coleta" not in out.columns:
+        out["data_coleta"] = pd.NaT
+    data_pub = pd.to_datetime(out["data_publicacao"], errors="coerce")
+    data_col = pd.to_datetime(out["data_coleta"], errors="coerce")
+    if "data_referencia" not in out.columns:
+        out["data_referencia"] = data_pub.fillna(data_col)
+    else:
+        out["data_referencia"] = pd.to_datetime(out["data_referencia"], errors="coerce").fillna(data_pub).fillna(data_col)
+    origem_fallback = np.where(data_pub.notna(), "publicacao", np.where(data_col.notna(), "coleta", "indefinida"))
+    out = _preencher_coluna_por_fallback(out, "origem_data_referencia", pd.Series(origem_fallback, index=out.index))
+
     return out
 
 
@@ -799,8 +826,14 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         base["data_publicacao"] = pd.NaT
     if "data_coleta" not in base.columns:
         base["data_coleta"] = pd.NaT
+    if "data_referencia" not in base.columns:
+        base["data_referencia"] = pd.to_datetime(base["data_publicacao"], errors="coerce").fillna(pd.to_datetime(base["data_coleta"], errors="coerce"))
+    if "origem_data_referencia" not in base.columns:
+        data_pub_tmp = pd.to_datetime(base["data_publicacao"], errors="coerce")
+        data_col_tmp = pd.to_datetime(base["data_coleta"], errors="coerce")
+        base["origem_data_referencia"] = np.where(data_pub_tmp.notna(), "publicacao", np.where(data_col_tmp.notna(), "coleta", "indefinida"))
 
-    ordenada = base.sort_values(["impacto", "data_coleta"], ascending=[False, False]).copy()
+    ordenada = base.sort_values(["impacto", "data_referencia"], ascending=[False, False]).copy()
     rep = ordenada.groupby("caso_id", as_index=False).first()
     agg = base.groupby("caso_id", as_index=False).agg(
         n_noticias=("id", "count"),
@@ -811,11 +844,13 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         ultima_coleta=("data_coleta", "max"),
         data_publicacao_min=("data_publicacao", "min"),
         data_publicacao_max=("data_publicacao", "max"),
+        data_referencia_min=("data_referencia", "min"),
+        data_referencia_max=("data_referencia", "max"),
         impacto_total=("impacto", "sum"),
         impacto_ponderado_total=("impacto_ponderado", "sum"),
     )
     cols_rep = [
-        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao", "url_fonte",
+        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao", "data_referencia", "origem_data_referencia", "url_fonte",
         "categoria_publica", "eixos_preconceito", "eixos_analiticos", "enquadramentos",
         "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro", "score_relevancia",
         "similaridade_caso", "agrupamento_caso", "caso_id_original_pipeline", "resumo"
@@ -827,13 +862,15 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         "fonte": "fonte_representativa",
         "data_coleta": "data_coleta_representativa",
         "data_publicacao": "data_publicacao_representativa",
+        "data_referencia": "data_referencia_representativa",
+        "origem_data_referencia": "origem_data_referencia_representativa",
         "url_fonte": "url_representativa",
         "resumo": "resumo_representativo",
     })
     casos = agg.merge(rep, on="caso_id", how="left")
     casos["data_referencia_coleta"] = casos["primeira_coleta"]
     casos["data_referencia_publicacao"] = casos["data_publicacao_min"].fillna(casos["primeira_coleta"])
-    casos["data_referencia"] = casos["data_referencia_coleta"]
+    casos["data_referencia"] = casos["data_referencia_min"].fillna(casos["data_referencia_publicacao"]).fillna(casos["data_referencia_coleta"])
     return casos.sort_values(["impacto_total", "ultima_coleta"], ascending=[False, False]).reset_index(drop=True)
 
 def aplicar_busca_textual(df: pd.DataFrame, consulta: str) -> pd.DataFrame:
@@ -1272,6 +1309,10 @@ with st.expander("⚙️ Recorte da consulta ao banco", expanded=True):
         )
 
 periodo_sql = mapa_periodo_sql[periodo_consulta_label]
+try:
+    garantir_colunas_curadoria_casos(get_engine())
+except Exception:
+    pass
 df_noticias, df_entidades, total_banco, erro_db = carregar_dados(periodo_sql, limite_consulta_sql)
 
 if erro_db:
@@ -1281,6 +1322,8 @@ if not df_noticias.empty and "data_coleta" in df_noticias.columns:
     df_noticias["data_coleta_fmt"] = df_noticias["data_coleta"].apply(formatar_data_curta)
     if "data_publicacao" in df_noticias.columns:
         df_noticias["data_publicacao_fmt"] = df_noticias["data_publicacao"].apply(formatar_data_curta)
+    if "data_referencia" in df_noticias.columns:
+        df_noticias["data_referencia_fmt"] = df_noticias["data_referencia"].apply(formatar_data_curta)
     data_mais_recente = formatar_data_curta(df_noticias["data_coleta"].max())
     df_noticias = enriquecer_dataframe_analitico(df_noticias)
     df_noticias = garantir_caso_id(df_noticias)
@@ -1681,7 +1724,7 @@ else:
     df_noticias["impacto"] = df_noticias["id"].apply(calcular_impacto)
     if "peso_tipo_fonte" in df_noticias.columns:
         df_noticias["impacto_ponderado"] = (df_noticias["impacto"].astype(float) * df_noticias["peso_tipo_fonte"].astype(float)).round(2)
-    df_noticias["data_filtro"] = pd.to_datetime(df_noticias["data_coleta"], errors="coerce")
+    df_noticias["data_filtro"] = pd.to_datetime(df_noticias.get("data_referencia", df_noticias["data_coleta"]), errors="coerce")
 
     if not df_noticias["data_filtro"].isna().all():
         if getattr(df_noticias["data_filtro"].dt, "tz", None) is None:
@@ -2013,8 +2056,8 @@ else:
 
     with st.expander("🕒 Linha do tempo"):
         st.caption(
-            "A linha do tempo por data de coleta mede o funcionamento do monitoramento: quando a notícia entrou na base. "
-            "A linha por data de publicação tenta aproximar o momento do acontecimento editorial, mas depende da qualidade dos metadados capturados."
+            "A data de referência usa a publicação quando ela existe e, na ausência dela, recorre à data de coleta. "
+            "Use data de coleta para auditar o monitoramento e data de publicação para avaliar apenas metadados editoriais capturados."
         )
 
         tl0, tl1, tl2 = st.columns([1.1, 1.2, 1.4])
@@ -2034,25 +2077,34 @@ else:
         with tl1:
             base_data_tempo = st.radio(
                 "Data usada",
-                options=["Data de coleta", "Data de publicação"],
+                options=["Data de referência", "Data de coleta", "Data de publicação"],
                 index=0,
                 horizontal=True,
                 key="timeline_base_data_v4",
                 help=(
-                    "Use data de coleta para avaliar o monitoramento. "
-                    "Use data de publicação para uma aproximação substantiva da ocorrência, sabendo que pode haver metadados ausentes ou imprecisos."
+                    "Data de referência = publicação quando disponível; caso contrário, coleta. "
+                    "Data de coleta audita o monitoramento; data de publicação mostra apenas metadados editoriais capturados."
                 )
             )
 
         with tl2:
             if camada_tempo == "Por caso":
-                if base_data_tempo == "Data de coleta":
+                if base_data_tempo == "Data de referência":
+                    marco_caso = st.radio(
+                        "Marco temporal do caso",
+                        options=["Primeira referência", "Última referência"],
+                        index=0,
+                        horizontal=True,
+                        key="timeline_marco_caso_referencia_v5",
+                        help="A referência usa publicação quando possível e coleta quando a publicação está ausente."
+                    )
+                elif base_data_tempo == "Data de coleta":
                     marco_caso = st.radio(
                         "Marco temporal do caso",
                         options=["Primeira coleta", "Última coleta"],
                         index=0,
                         horizontal=True,
-                        key="timeline_marco_caso_coleta_v4",
+                        key="timeline_marco_caso_coleta_v5",
                         help="Primeira coleta mede quando o caso entrou no observatório; última coleta mede a repercussão mais recente do caso."
                     )
                 else:
@@ -2061,8 +2113,8 @@ else:
                         options=["Primeira publicação", "Última publicação"],
                         index=0,
                         horizontal=True,
-                        key="timeline_marco_caso_publicacao_v4",
-                        help="Use primeira publicação para localizar o começo do caso; use última publicação para localizar repercussão editorial posterior."
+                        key="timeline_marco_caso_publicacao_v5",
+                        help="Use primeira publicação para localizar o começo editorial do caso; use última publicação para repercussão editorial posterior."
                     )
             else:
                 marco_caso = None
@@ -2082,7 +2134,14 @@ else:
                 if base.empty:
                     return base, unidade_plural, unidade_singular
 
-                if base_data_tempo == "Data de publicação":
+                if base_data_tempo == "Data de referência":
+                    col_data = "data_referencia_min" if marco_caso == "Primeira referência" else "data_referencia_max"
+                    fallback = "primeira_coleta" if marco_caso == "Primeira referência" else "ultima_coleta"
+                    base["data_timeline"] = _serie_datetime_br(base.get(col_data, pd.NaT)).fillna(
+                        _serie_datetime_br(base.get(fallback, pd.NaT))
+                    )
+                    base["origem_data_linha"] = np.where(base.get(col_data, pd.Series(index=base.index, dtype=object)).notna(), col_data, fallback)
+                elif base_data_tempo == "Data de publicação":
                     col_data = "data_publicacao_min" if marco_caso == "Primeira publicação" else "data_publicacao_max"
                     fallback = "primeira_coleta" if marco_caso == "Primeira publicação" else "ultima_coleta"
                     base["data_timeline"] = _serie_datetime_br(base.get(col_data, pd.NaT)).fillna(
@@ -2104,7 +2163,16 @@ else:
             if base.empty:
                 return base, unidade_plural, unidade_singular
 
-            if base_data_tempo == "Data de publicação" and "data_publicacao" in base.columns:
+            if base_data_tempo == "Data de referência":
+                ref = _serie_datetime_br(base.get("data_referencia", pd.NaT))
+                pub = _serie_datetime_br(base.get("data_publicacao", pd.NaT))
+                coleta = _serie_datetime_br(base.get("data_coleta", pd.NaT))
+                base["data_timeline"] = ref.fillna(pub).fillna(coleta)
+                if "origem_data_referencia" in base.columns:
+                    base["origem_data_linha"] = base["origem_data_referencia"].fillna("indefinida")
+                else:
+                    base["origem_data_linha"] = np.where(pub.notna(), "publicacao", np.where(coleta.notna(), "coleta", "indefinida"))
+            elif base_data_tempo == "Data de publicação" and "data_publicacao" in base.columns:
                 pub = _serie_datetime_br(base["data_publicacao"])
                 coleta = _serie_datetime_br(base.get("data_coleta", pd.NaT))
                 base["data_timeline"] = pub.fillna(coleta)
@@ -2166,6 +2234,7 @@ else:
                         st.dataframe(diag_origem, use_container_width=True, hide_index=True)
                     cols_diag = [c for c in [
                         "id", "caso_id", "titulo", "titulo_representativo", "fonte", "fonte_representativa",
+                        "data_referencia", "data_referencia_min", "data_referencia_max", "origem_data_referencia",
                         "data_publicacao", "data_publicacao_min", "data_publicacao_max",
                         "data_coleta", "primeira_coleta", "ultima_coleta", "data_timeline", "origem_data_linha"
                     ] if c in df_tempo.columns]

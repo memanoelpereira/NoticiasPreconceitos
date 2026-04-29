@@ -214,6 +214,16 @@ def _data_referencia_cluster(data_publicacao, data_coleta):
         return None
 
 
+
+
+def calcular_data_referencia(data_publicacao: Optional[datetime], data_coleta: Optional[datetime]) -> tuple[Optional[datetime], str]:
+    """Define a data estável para análises temporais: publicação, quando disponível; senão coleta."""
+    if data_publicacao:
+        return data_publicacao, "publicacao"
+    if data_coleta:
+        return data_coleta, "coleta"
+    return None, "indefinida"
+
 def _distancia_dias(d1, d2) -> int:
     if d1 is None or d2 is None:
         return 999999
@@ -231,13 +241,13 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
     """Recalcula caso_id por similaridade lexical. Roda no pipeline, não no Streamlit."""
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, titulo, fonte, data_coleta, data_publicacao,
+        SELECT id, titulo, fonte, data_coleta, data_publicacao, data_referencia,
                categoria_publica, resumo, texto_completo
         FROM noticias
         WHERE titulo IS NOT NULL
           AND COALESCE(caso_manual, FALSE) = FALSE
           AND COALESCE(falso_positivo, FALSE) = FALSE
-        ORDER BY COALESCE(data_publicacao, data_coleta), id
+        ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta), id
         LIMIT %s
     """, (limite,))
     rows = cursor.fetchall()
@@ -248,9 +258,9 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
     atribuicoes = []
 
     for row in rows:
-        noticia_id, titulo, fonte, data_coleta, data_publicacao, categoria, resumo, texto_completo = row
+        noticia_id, titulo, fonte, data_coleta, data_publicacao, data_referencia, categoria, resumo, texto_completo = row
         categoria = categoria or classificar_categoria_publica(titulo or "", resumo or "", texto_completo or "")
-        data_ref = _data_referencia_cluster(data_publicacao, data_coleta)
+        data_ref = _data_referencia_cluster(data_referencia or data_publicacao, data_coleta)
         tokens = tokens_para_cluster_caso(titulo or "", resumo or "", texto_completo or "")
 
         melhor_idx = None
@@ -564,6 +574,8 @@ def preparar_banco(conn) -> None:
             fonte            TEXT,
             data_coleta      TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
             data_publicacao  TIMESTAMPTZ,
+            data_referencia  TIMESTAMPTZ,
+            origem_data_referencia TEXT,
             score_relevancia DOUBLE PRECISION,
             classificacao    TEXT,
             criterio_filtro  TEXT,
@@ -598,6 +610,8 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS resumo TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS texto_completo TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_publicacao TIMESTAMPTZ",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS categoria_publica TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS eixos_analiticos TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS enquadramentos TEXT",
@@ -662,6 +676,8 @@ def preparar_banco(conn) -> None:
     cursor.execute("ALTER TABLE pipeline_fontes ADD COLUMN IF NOT EXISTS diagnostico_fonte TEXT")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_execucoes_inicio ON pipeline_execucoes (inicio DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_fontes_execucao ON pipeline_fontes (execucao_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_origem_data_referencia ON noticias (origem_data_referencia)")
     conn.commit()
 
 
@@ -895,13 +911,16 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, titulo, fonte, data_coleta, url_fonte, resumo, texto_completo,
-               data_publicacao, COALESCE(caso_manual, FALSE) AS caso_manual
+               data_publicacao, data_referencia, origem_data_referencia,
+               COALESCE(caso_manual, FALSE) AS caso_manual
         FROM noticias
         WHERE categoria_publica IS NULL
            OR eixos_analiticos IS NULL
            OR enquadramentos IS NULL
            OR tipo_fonte IS NULL
            OR regiao_fonte IS NULL
+           OR data_referencia IS NULL
+           OR origem_data_referencia IS NULL
            OR (
                 COALESCE(caso_manual, FALSE) = FALSE
                 AND (
@@ -918,7 +937,8 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
     for row in rows:
         (
             noticia_id, titulo, fonte, data_coleta, url_fonte, resumo,
-            texto_completo, data_publicacao_atual, caso_manual
+            texto_completo, data_publicacao_atual, data_referencia_atual,
+            origem_data_referencia_atual, caso_manual
         ) = row
         data_publicacao = data_publicacao_atual
         resumo_local = resumo
@@ -941,10 +961,13 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
             data_publicacao,
             data_coleta,
         )
+        data_referencia, origem_data_referencia = calcular_data_referencia(data_publicacao, data_coleta)
 
         cursor.execute("""
             UPDATE noticias
             SET data_publicacao = COALESCE(%s, data_publicacao),
+                data_referencia = COALESCE(%s, data_referencia),
+                origem_data_referencia = COALESCE(%s, origem_data_referencia),
                 resumo = COALESCE(resumo, %s),
                 texto_completo = COALESCE(texto_completo, %s),
                 categoria_publica = %s,
@@ -963,6 +986,8 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
             WHERE id = %s
         """, (
             data_publicacao,
+            data_referencia,
+            origem_data_referencia,
             resumo_local,
             texto_local,
             campos["categoria_publica"],
@@ -1068,17 +1093,18 @@ def coletar_noticias() -> None:
                 try:
                     resumo, texto_completo, data_publicacao = extrair_texto_artigo(url)
                     data_hora = datetime.now(fuso_br)
+                    data_referencia, origem_data_referencia = calcular_data_referencia(data_publicacao, data_hora)
                     campos_analiticos = gerar_campos_analiticos(titulo, nome, resumo or "", texto_completo or "", data_publicacao, data_hora)
                     cursor.execute("""
                         INSERT INTO noticias (
-                            titulo, fonte, data_coleta, data_publicacao, score_relevancia, classificacao,
-                            criterio_filtro, url_fonte, resumo, texto_completo, categoria_publica,
+                            titulo, fonte, data_coleta, data_publicacao, data_referencia, origem_data_referencia,
+                            score_relevancia, classificacao, criterio_filtro, url_fonte, resumo, texto_completo, categoria_publica,
                             eixos_analiticos, enquadramentos, tipo_fonte, regiao_fonte, caso_id, similaridade_caso
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (titulo) DO NOTHING
                         RETURNING id
-                    """, (titulo, nome, data_hora, data_publicacao, score, classificacao, criterio, url, resumo, texto_completo, campos_analiticos["categoria_publica"], campos_analiticos["eixos_analiticos"], campos_analiticos["enquadramentos"], campos_analiticos["tipo_fonte"], campos_analiticos["regiao_fonte"], campos_analiticos["caso_id"], campos_analiticos["similaridade_caso"]))
+                    """, (titulo, nome, data_hora, data_publicacao, data_referencia, origem_data_referencia, score, classificacao, criterio, url, resumo, texto_completo, campos_analiticos["categoria_publica"], campos_analiticos["eixos_analiticos"], campos_analiticos["enquadramentos"], campos_analiticos["tipo_fonte"], campos_analiticos["regiao_fonte"], campos_analiticos["caso_id"], campos_analiticos["similaridade_caso"]))
                     row = cursor.fetchone()
                     if row is None:
                         duplicados += 1; totais["duplicados"] += 1
