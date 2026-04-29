@@ -2517,12 +2517,66 @@ else:
     # ABA DE GESTÃO DE CASOS (ADMIN) - BLINDADA E DINÂMICA
     # ---------------------------------------------------------
     with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
+        # 2. Verificação de Senha
         if senha_digitada == senha_correta:
+            # --- NOVA LÓGICA DE FILTRO INTEGRADO ---
+            if busca_texto:
+                query_curadoria = text("""
+                            SELECT id, data_coleta, fonte, titulo, falso_positivo
+                            FROM noticias
+                            WHERE falso_positivo = FALSE
+                              AND (titulo ILIKE :termo OR fonte ILIKE :termo)
+                            ORDER BY data_coleta DESC LIMIT 100
+                        """)
+                params_curadoria = {"termo": f"%{busca_texto}%"}
+            else:
+                query_curadoria = text("""
+                            SELECT id, data_coleta, fonte, titulo, falso_positivo
+                            FROM noticias
+                            WHERE falso_positivo = FALSE
+                            ORDER BY data_coleta DESC LIMIT 100
+                        """)
+                params_curadoria = {}
+
+            try:
+                with engine.connect() as conn:
+                    # Agora passamos os params_curadoria para a query
+                    df_para_curar = pd.read_sql(query_curadoria, conn, params=params_curadoria)
+            except Exception as e:
+                st.error(f"Erro ao carregar dados para curadoria: {e}")
+                st.stop()
             st.markdown("Selecione as notícias na tabela para agrupá-las ou separá-las.")
 
             # TRUQUE DE MESTRE: Chave dinâmica para forçar a limpeza visual da tabela
+            # TRUQUE DE MESTRE: Chave dinâmica para forçar a limpeza visual da tabela
             if "chave_gestao" not in st.session_state:
                 st.session_state["chave_gestao"] = 0
+
+            # --- NOVA LÓGICA DE FILTRO INTEGRADO ---
+            if busca_texto:
+                query_casos = text("""
+                                SELECT id, data_coleta, fonte, titulo, caso_id 
+                                FROM noticias 
+                                WHERE falso_positivo = FALSE
+                                  AND (titulo ILIKE :termo OR fonte ILIKE :termo)
+                                ORDER BY data_coleta DESC LIMIT :limite
+                            """)
+                params_gestao = {"limite": limite_busca, "termo": f"%{busca_texto}%"}
+            else:
+                query_casos = text("""
+                                SELECT id, data_coleta, fonte, titulo, caso_id 
+                                FROM noticias 
+                                WHERE falso_positivo = FALSE
+                                ORDER BY data_coleta DESC LIMIT :limite
+                            """)
+                params_gestao = {"limite": limite_busca}
+
+            try:
+                with engine.connect() as conn:
+                    df_casos = pd.read_sql(query_casos, conn, params=params_gestao)
+            except Exception as e:
+                st.error(f"Erro ao carregar casos: {e}")
+                st.stop()
 
             query_casos = text("""
                 SELECT id, data_coleta, fonte, titulo, caso_id 
