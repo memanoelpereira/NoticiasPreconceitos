@@ -198,6 +198,367 @@ def carregar_saude_pipeline():
         return pd.DataFrame(), pd.DataFrame(), str(e)
 
 
+def _preparar_df_fontes_pipeline(df_fontes_pipeline: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza tipos e colunas esperadas no painel de saúde."""
+    if df_fontes_pipeline is None or df_fontes_pipeline.empty:
+        return pd.DataFrame()
+
+    df = df_fontes_pipeline.copy()
+    for col in [
+        "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
+        "caso_sensivel", "inseridos", "duplicados", "erros_db"
+    ]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    for col in ["tipo_erro", "diagnostico_fonte", "erro", "status", "fonte"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
+
+    for col in ["taxa_filtragem_pct", "taxa_aproveitamento_pct"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+
+def renderizar_saude_coleta() -> None:
+    """Renderiza o painel de saúde da coleta automática. Deve ser chamado apenas dentro da área protegida."""
+    df_exec_pipeline, df_fontes_pipeline, erro_pipeline = carregar_saude_pipeline()
+
+    with st.expander("🩺 Saúde da coleta automática", expanded=True):
+        if erro_pipeline:
+            st.info(
+                "Ainda não encontrei as tabelas de diagnóstico do pipeline. "
+                "Depois que o GitHub Actions rodar uma vez com o novo pipeline, este painel será preenchido. "
+                f"Detalhe técnico: {erro_pipeline}"
+            )
+            return
+
+        if df_exec_pipeline.empty:
+            st.info("Ainda não há execução registrada do pipeline.")
+            return
+
+        exec_row = df_exec_pipeline.iloc[0]
+        status_exec = str(exec_row.get("status", "—"))
+        inicio_exec = formatar_data_curta(exec_row.get("inicio"))
+        fim_exec = formatar_data_curta(exec_row.get("fim"))
+        duracao = exec_row.get("duracao_seg")
+        duracao_txt = "—" if pd.isna(duracao) else f"{float(duracao):.1f}s"
+
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Última execução", inicio_exec)
+        s2.metric("Status", status_exec)
+        s3.metric("Duração", duracao_txt)
+        s4.metric("Portais OK", int(exec_row.get("portais_ok", 0) or 0))
+        s5.metric("Portais com erro", int(exec_row.get("portais_erro", 0) or 0))
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Títulos extraídos", int(exec_row.get("extraidos", 0) or 0))
+        c2.metric("Títulos filtrados", int(exec_row.get("filtrados", 0) or 0))
+        c3.metric("Notícias novas", int(exec_row.get("inseridos", 0) or 0))
+        c4.metric("Duplicadas", int(exec_row.get("duplicados", 0) or 0))
+        c5.metric("Erros no banco", int(exec_row.get("erros_db", 0) or 0))
+
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Backfill atualizado", int(exec_row.get("backfill_atualizados", 0) or 0))
+        b2.metric("Casos reagrupados no início", int(exec_row.get("reagrupamento_inicio_atualizados", 0) or 0))
+        b3.metric("Casos reagrupados no final", int(exec_row.get("reagrupamento_final_atualizados", 0) or 0))
+
+        obs = exec_row.get("observacao")
+        if isinstance(obs, str) and obs.strip():
+            st.caption(obs)
+        st.caption(f"Início: {inicio_exec} | Fim: {fim_exec}")
+
+        portais_erro_n = int(exec_row.get("portais_erro", 0) or 0)
+        extraidos_n = int(exec_row.get("extraidos", 0) or 0)
+        filtrados_n = int(exec_row.get("filtrados", 0) or 0)
+        inseridos_n = int(exec_row.get("inseridos", 0) or 0)
+        erros_db_n = int(exec_row.get("erros_db", 0) or 0)
+        taxa_filtragem_geral = (filtrados_n / extraidos_n * 100) if extraidos_n else 0.0
+        taxa_insercao_filtrados = (inseridos_n / filtrados_n * 100) if filtrados_n else 0.0
+
+        alertas_saude = []
+        if portais_erro_n > 0:
+            alertas_saude.append(f"⚠️ {portais_erro_n} portais apresentaram erro nesta execução.")
+        if extraidos_n > 0 and taxa_filtragem_geral < 1.0:
+            alertas_saude.append(f"ℹ️ A filtragem temática ficou abaixo de 1% ({taxa_filtragem_geral:.2f}%).")
+        if filtrados_n > 0 and taxa_insercao_filtrados < 25.0:
+            alertas_saude.append(f"ℹ️ Baixa inserção entre os títulos filtrados ({taxa_insercao_filtrados:.1f}%); muitos itens podem ser duplicados.")
+        if erros_db_n > 0:
+            alertas_saude.append(f"⚠️ {erros_db_n} erros ocorreram ao salvar notícias no banco.")
+
+        if not alertas_saude:
+            st.success("✅ Coleta sem alertas críticos nesta execução.")
+        else:
+            st.warning("\n\n".join(alertas_saude))
+
+        df_fontes_vis = _preparar_df_fontes_pipeline(df_fontes_pipeline)
+        if df_fontes_vis.empty:
+            st.info("Não há dados por fonte para a última execução.")
+            return
+
+        fontes_erro = df_fontes_vis[df_fontes_vis["status"].str.lower().eq("erro")].copy()
+        fontes_zero = df_fontes_vis[
+            (df_fontes_vis["status"].str.lower().eq("ok"))
+            & (df_fontes_vis["extraidos"] <= 0)
+        ].copy()
+        fontes_produtivas = df_fontes_vis.sort_values(
+            ["inseridos", "filtrados", "extraidos"], ascending=False
+        ).head(15)
+
+        t1, t2, t3 = st.tabs(["Fontes com erro", "Fontes sem títulos", "Fontes mais produtivas"])
+        with t1:
+            if fontes_erro.empty:
+                st.success("Nenhum portal com erro na última execução.")
+            else:
+                st.dataframe(
+                    fontes_erro[["fonte", "tipo_erro", "diagnostico_fonte", "erro", "extraidos", "filtrados", "inseridos", "erros_db"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
+        with t2:
+            if fontes_zero.empty:
+                st.success("Nenhum portal OK retornou zero títulos.")
+            else:
+                st.dataframe(
+                    fontes_zero[["fonte", "status", "diagnostico_fonte", "extraidos", "filtrados", "inseridos"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
+        with t3:
+            st.dataframe(
+                fontes_produtivas[[
+                    "fonte", "status", "diagnostico_fonte", "extraidos", "filtrados", "inseridos",
+                    "duplicados", "taxa_filtragem_pct", "taxa_aproveitamento_pct"
+                ]],
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+@st.cache_data(ttl=120)
+def carregar_historico_fontes_pipeline(limite_execucoes: int = 50):
+    """Carrega histórico recente de desempenho por fonte para auditoria operacional."""
+    try:
+        with get_engine().connect() as conn:
+            try:
+                df = pd.read_sql(
+                    text("""
+                        WITH ultimas AS (
+                            SELECT id, inicio, fim, status AS status_execucao
+                            FROM pipeline_execucoes
+                            ORDER BY inicio DESC
+                            LIMIT :limite
+                        )
+                        SELECT pf.execucao_id, u.inicio, u.fim, u.status_execucao,
+                               pf.fonte, pf.status, pf.erro, pf.tipo_erro, pf.diagnostico_fonte,
+                               pf.extraidos, pf.filtrados,
+                               pf.alta_relevancia, pf.relevancia_contextual, pf.caso_sensivel,
+                               pf.inseridos, pf.duplicados, pf.erros_db,
+                               pf.taxa_filtragem_pct, pf.taxa_aproveitamento_pct
+                        FROM pipeline_fontes pf
+                        INNER JOIN ultimas u ON u.id = pf.execucao_id
+                        ORDER BY u.inicio DESC, pf.fonte
+                    """),
+                    conn,
+                    params={"limite": int(limite_execucoes)}
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                df = pd.read_sql(
+                    text("""
+                        WITH ultimas AS (
+                            SELECT id, inicio, fim, status AS status_execucao
+                            FROM pipeline_execucoes
+                            ORDER BY inicio DESC
+                            LIMIT :limite
+                        )
+                        SELECT pf.execucao_id, u.inicio, u.fim, u.status_execucao,
+                               pf.fonte, pf.status, pf.erro,
+                               pf.extraidos, pf.filtrados,
+                               pf.alta_relevancia, pf.relevancia_contextual, pf.caso_sensivel,
+                               pf.inseridos, pf.duplicados, pf.erros_db,
+                               pf.taxa_filtragem_pct, pf.taxa_aproveitamento_pct
+                        FROM pipeline_fontes pf
+                        INNER JOIN ultimas u ON u.id = pf.execucao_id
+                        ORDER BY u.inicio DESC, pf.fonte
+                    """),
+                    conn,
+                    params={"limite": int(limite_execucoes)}
+                )
+                df["tipo_erro"] = ""
+                df["diagnostico_fonte"] = "Diagnóstico não disponível nas execuções antigas."
+        return df, None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+def _agregar_historico_fontes(df_hist: pd.DataFrame) -> pd.DataFrame:
+    if df_hist is None or df_hist.empty:
+        return pd.DataFrame()
+
+    df = df_hist.copy()
+    for col in ["extraidos", "filtrados", "inseridos", "duplicados", "erros_db"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    for col in ["status", "fonte", "tipo_erro", "diagnostico_fonte", "erro"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
+
+    df["is_erro"] = df["status"].str.lower().eq("erro")
+    df["is_zero_ok"] = df["status"].str.lower().eq("ok") & (df["extraidos"] <= 0)
+    df["inicio_dt"] = pd.to_datetime(df.get("inicio"), errors="coerce")
+
+    agg = df.groupby("fonte", dropna=False).agg(
+        execucoes=("execucao_id", "nunique"),
+        erros=("is_erro", "sum"),
+        zeros_ok=("is_zero_ok", "sum"),
+        media_extraidos=("extraidos", "mean"),
+        media_filtrados=("filtrados", "mean"),
+        media_inseridos=("inseridos", "mean"),
+        total_extraidos=("extraidos", "sum"),
+        total_filtrados=("filtrados", "sum"),
+        total_inseridos=("inseridos", "sum"),
+        total_duplicados=("duplicados", "sum"),
+        erros_db=("erros_db", "sum"),
+        ultima_execucao=("inicio_dt", "max"),
+    ).reset_index()
+
+    agg["taxa_erro_pct"] = np.where(agg["execucoes"] > 0, agg["erros"] / agg["execucoes"] * 100, np.nan)
+    agg["taxa_zero_ok_pct"] = np.where(agg["execucoes"] > 0, agg["zeros_ok"] / agg["execucoes"] * 100, np.nan)
+    agg["taxa_filtragem_media_pct"] = np.where(
+        agg["total_extraidos"] > 0, agg["total_filtrados"] / agg["total_extraidos"] * 100, np.nan
+    )
+    agg["taxa_insercao_filtrados_pct"] = np.where(
+        agg["total_filtrados"] > 0, agg["total_inseridos"] / agg["total_filtrados"] * 100, np.nan
+    )
+
+    # Último status/erro por fonte, considerando a execução mais recente.
+    df_ult = df.sort_values(["fonte", "inicio_dt"], ascending=[True, False]).drop_duplicates("fonte")
+    df_ult = df_ult[["fonte", "status", "tipo_erro", "diagnostico_fonte", "erro"]].rename(columns={
+        "status": "ultimo_status",
+        "tipo_erro": "ultimo_tipo_erro",
+        "diagnostico_fonte": "ultimo_diagnostico",
+        "erro": "ultimo_erro",
+    })
+    agg = agg.merge(df_ult, on="fonte", how="left")
+
+    # Arredondamento apenas para visualização.
+    for col in [
+        "media_extraidos", "media_filtrados", "media_inseridos", "taxa_erro_pct",
+        "taxa_zero_ok_pct", "taxa_filtragem_media_pct", "taxa_insercao_filtrados_pct"
+    ]:
+        agg[col] = pd.to_numeric(agg[col], errors="coerce").round(2)
+
+    agg["ultima_execucao"] = agg["ultima_execucao"].apply(formatar_data_curta)
+    return agg
+
+
+def renderizar_gestao_fontes() -> None:
+    """Painel histórico para governança das fontes monitoradas."""
+    with st.expander("🗂️ Gestão das fontes monitoradas", expanded=True):
+        col_l, col_info = st.columns([1, 3])
+        with col_l:
+            limite_execucoes = st.selectbox(
+                "Histórico considerado",
+                options=[10, 20, 50, 100, 200],
+                index=2,
+                key="auditoria_limite_execucoes_fontes"
+            )
+        with col_info:
+            st.caption(
+                "O painel agrega o desempenho por fonte nas últimas execuções registradas pelo pipeline. "
+                "Ele ajuda a decidir quais portais manter, revisar, trocar de estratégia ou observar com cautela."
+            )
+
+        df_hist, erro = carregar_historico_fontes_pipeline(limite_execucoes=int(limite_execucoes))
+        if erro:
+            st.info(f"Ainda não foi possível carregar o histórico de fontes: {erro}")
+            return
+        if df_hist.empty:
+            st.info("Ainda não há histórico de fontes suficiente para auditoria.")
+            return
+
+        df_ag = _agregar_historico_fontes(df_hist)
+        if df_ag.empty:
+            st.info("Não foi possível agregar o histórico de fontes.")
+            return
+
+        total_fontes = int(df_ag["fonte"].nunique())
+        fontes_erro_rec = df_ag[(df_ag["execucoes"] >= 2) & ((df_ag["erros"] >= 2) | (df_ag["taxa_erro_pct"] >= 30))].copy()
+        fontes_zero_rec = df_ag[(df_ag["execucoes"] >= 2) & ((df_ag["zeros_ok"] >= 2) | (df_ag["taxa_zero_ok_pct"] >= 50))].copy()
+        fontes_prod = df_ag.sort_values(["total_inseridos", "total_filtrados", "total_extraidos"], ascending=False).head(25).copy()
+        fontes_ruido = df_ag[
+            (df_ag["total_extraidos"] >= 50) &
+            (df_ag["total_filtrados"] <= 1) &
+            (df_ag["total_inseridos"] <= 1)
+        ].sort_values(["total_extraidos", "taxa_filtragem_media_pct"], ascending=[False, True]).copy()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Fontes no histórico", total_fontes)
+        m2.metric("Erro recorrente", int(len(fontes_erro_rec)))
+        m3.metric("Zero títulos recorrente", int(len(fontes_zero_rec)))
+        m4.metric("Fontes produtivas", int((df_ag["total_inseridos"] > 0).sum()))
+
+        if len(fontes_erro_rec) > 0 or len(fontes_zero_rec) > 0 or len(fontes_ruido) > 0:
+            avisos = []
+            if len(fontes_erro_rec) > 0:
+                avisos.append(f"⚠️ {len(fontes_erro_rec)} fontes têm erro recorrente.")
+            if len(fontes_zero_rec) > 0:
+                avisos.append(f"ℹ️ {len(fontes_zero_rec)} fontes retornam zero títulos de forma recorrente.")
+            if len(fontes_ruido) > 0:
+                avisos.append(f"ℹ️ {len(fontes_ruido)} fontes extraem muito, mas quase nada passa pelo filtro.")
+            st.warning("\n\n".join(avisos))
+        else:
+            st.success("✅ Nenhum alerta recorrente relevante nas fontes monitoradas.")
+
+        colunas_base = [
+            "fonte", "execucoes", "erros", "taxa_erro_pct", "zeros_ok", "taxa_zero_ok_pct",
+            "media_extraidos", "media_filtrados", "media_inseridos",
+            "total_extraidos", "total_filtrados", "total_inseridos", "total_duplicados",
+            "taxa_filtragem_media_pct", "taxa_insercao_filtrados_pct",
+            "ultimo_status", "ultimo_tipo_erro", "ultimo_diagnostico", "ultimo_erro", "ultima_execucao"
+        ]
+        colunas_base = [c for c in colunas_base if c in df_ag.columns]
+
+        t1, t2, t3, t4, t5 = st.tabs([
+            "Erro recorrente",
+            "Zero títulos recorrente",
+            "Mais produtivas",
+            "Muito volume, pouco filtro",
+            "Resumo completo",
+        ])
+        with t1:
+            if fontes_erro_rec.empty:
+                st.success("Nenhuma fonte com erro recorrente no período considerado.")
+            else:
+                st.dataframe(fontes_erro_rec[colunas_base], use_container_width=True, hide_index=True)
+        with t2:
+            if fontes_zero_rec.empty:
+                st.success("Nenhuma fonte com zero títulos recorrente no período considerado.")
+            else:
+                st.dataframe(fontes_zero_rec[colunas_base], use_container_width=True, hide_index=True)
+        with t3:
+            st.dataframe(fontes_prod[colunas_base], use_container_width=True, hide_index=True)
+        with t4:
+            if fontes_ruido.empty:
+                st.success("Nenhuma fonte com muito volume e baixo aproveitamento no período considerado.")
+            else:
+                st.dataframe(fontes_ruido[colunas_base], use_container_width=True, hide_index=True)
+        with t5:
+            st.dataframe(df_ag.sort_values(["fonte"])[colunas_base], use_container_width=True, hide_index=True)
+
+
 def safe_text(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "—"
@@ -1338,125 +1699,6 @@ m1.metric("Notícias na janela atual", total_noticias)
 m2.metric("Total no banco", total_banco)
 m3.metric("Entidades", total_entidades)
 m4.metric("Última coleta (Brasil)", data_mais_recente)
-
-# =========================
-# Saúde da coleta / GitHub Actions
-# =========================
-df_exec_pipeline, df_fontes_pipeline, erro_pipeline = carregar_saude_pipeline()
-
-with st.expander("🩺 Saúde da coleta automática", expanded=False):
-    if erro_pipeline:
-        st.info(
-            "Ainda não encontrei as tabelas de diagnóstico do pipeline. "
-            "Depois que o GitHub Actions rodar uma vez com o novo pipeline, este painel será preenchido. "
-            f"Detalhe técnico: {erro_pipeline}"
-        )
-    elif df_exec_pipeline.empty:
-        st.info("Ainda não há execução registrada do pipeline.")
-    else:
-        exec_row = df_exec_pipeline.iloc[0]
-        status_exec = str(exec_row.get("status", "—"))
-        inicio_exec = formatar_data_curta(exec_row.get("inicio"))
-        fim_exec = formatar_data_curta(exec_row.get("fim"))
-        duracao = exec_row.get("duracao_seg")
-        duracao_txt = "—" if pd.isna(duracao) else f"{float(duracao):.1f}s"
-
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("Última execução", inicio_exec)
-        s2.metric("Status", status_exec)
-        s3.metric("Duração", duracao_txt)
-        s4.metric("Portais OK", int(exec_row.get("portais_ok", 0) or 0))
-        s5.metric("Portais com erro", int(exec_row.get("portais_erro", 0) or 0))
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Títulos extraídos", int(exec_row.get("extraidos", 0) or 0))
-        c2.metric("Títulos filtrados", int(exec_row.get("filtrados", 0) or 0))
-        c3.metric("Notícias novas", int(exec_row.get("inseridos", 0) or 0))
-        c4.metric("Duplicadas", int(exec_row.get("duplicados", 0) or 0))
-        c5.metric("Erros no banco", int(exec_row.get("erros_db", 0) or 0))
-
-        b1, b2, b3 = st.columns(3)
-        b1.metric("Backfill atualizado", int(exec_row.get("backfill_atualizados", 0) or 0))
-        b2.metric("Casos reagrupados no início", int(exec_row.get("reagrupamento_inicio_atualizados", 0) or 0))
-        b3.metric("Casos reagrupados no final", int(exec_row.get("reagrupamento_final_atualizados", 0) or 0))
-
-        obs = exec_row.get("observacao")
-        if isinstance(obs, str) and obs.strip():
-            st.caption(obs)
-        st.caption(f"Início: {inicio_exec} | Fim: {fim_exec}")
-
-        # Alertas sintéticos da saúde da coleta
-        portais_erro_n = int(exec_row.get("portais_erro", 0) or 0)
-        extraidos_n = int(exec_row.get("extraidos", 0) or 0)
-        filtrados_n = int(exec_row.get("filtrados", 0) or 0)
-        inseridos_n = int(exec_row.get("inseridos", 0) or 0)
-        erros_db_n = int(exec_row.get("erros_db", 0) or 0)
-        taxa_filtragem_geral = (filtrados_n / extraidos_n * 100) if extraidos_n else 0.0
-        taxa_insercao_filtrados = (inseridos_n / filtrados_n * 100) if filtrados_n else 0.0
-
-        alertas_saude = []
-        if portais_erro_n > 0:
-            alertas_saude.append(f"⚠️ {portais_erro_n} portais apresentaram erro nesta execução.")
-        if extraidos_n > 0 and taxa_filtragem_geral < 1.0:
-            alertas_saude.append(f"ℹ️ A filtragem temática ficou abaixo de 1% ({taxa_filtragem_geral:.2f}%).")
-        if filtrados_n > 0 and taxa_insercao_filtrados < 25.0:
-            alertas_saude.append(f"ℹ️ Baixa inserção entre os títulos filtrados ({taxa_insercao_filtrados:.1f}%); muitos itens podem ser duplicados.")
-        if erros_db_n > 0:
-            alertas_saude.append(f"⚠️ {erros_db_n} erros ocorreram ao salvar notícias no banco.")
-        if not alertas_saude:
-            st.success("✅ Coleta sem alertas críticos nesta execução.")
-        else:
-            st.warning("\n\n".join(alertas_saude))
-
-        if not df_fontes_pipeline.empty:
-            df_fontes_vis = df_fontes_pipeline.copy()
-            for col in [
-                "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
-                "caso_sensivel", "inseridos", "duplicados", "erros_db"
-            ]:
-                if col in df_fontes_vis.columns:
-                    df_fontes_vis[col] = pd.to_numeric(df_fontes_vis[col], errors="coerce").fillna(0).astype(int)
-
-            for col in ["tipo_erro", "diagnostico_fonte", "erro"]:
-                if col not in df_fontes_vis.columns:
-                    df_fontes_vis[col] = ""
-                df_fontes_vis[col] = df_fontes_vis[col].fillna("").astype(str)
-
-            fontes_erro = df_fontes_vis[df_fontes_vis["status"].astype(str).str.lower().eq("erro")].copy()
-            fontes_zero = df_fontes_vis[
-                (df_fontes_vis["status"].astype(str).str.lower().eq("ok"))
-                & (df_fontes_vis["extraidos"] <= 0)
-            ].copy()
-            fontes_produtivas = df_fontes_vis.sort_values(["inseridos", "filtrados", "extraidos"], ascending=False).head(15)
-
-            t1, t2, t3 = st.tabs(["Fontes com erro", "Fontes sem títulos", "Fontes mais produtivas"])
-            with t1:
-                if fontes_erro.empty:
-                    st.success("Nenhum portal com erro na última execução.")
-                else:
-                    st.dataframe(
-                        fontes_erro[["fonte", "tipo_erro", "diagnostico_fonte", "erro", "extraidos", "filtrados", "inseridos", "erros_db"]],
-                        use_container_width=True,
-                        hide_index=True
-                    )
-            with t2:
-                if fontes_zero.empty:
-                    st.success("Nenhum portal OK retornou zero títulos.")
-                else:
-                    st.dataframe(
-                        fontes_zero[["fonte", "status", "diagnostico_fonte", "extraidos", "filtrados", "inseridos"]],
-                        use_container_width=True,
-                        hide_index=True
-                    )
-            with t3:
-                st.dataframe(
-                    fontes_produtivas[[
-                        "fonte", "status", "diagnostico_fonte", "extraidos", "filtrados", "inseridos",
-                        "duplicados", "taxa_filtragem_pct", "taxa_aproveitamento_pct"
-                    ]],
-                    use_container_width=True,
-                    hide_index=True
-                )
 
 # =========================
 # Painel de acompanhamento no topo
@@ -2924,3 +3166,31 @@ else:
                 st.write("Nenhuma notícia encontrada com este filtro.")
         else:
             st.info("Insira a senha de administrador.")
+
+# ---------------------------------------------------------
+# DOMÍNIO DE AUDITORIA OPERACIONAL (ADMIN)
+# ---------------------------------------------------------
+st.divider()
+with st.expander("🔐 Domínio de auditoria operacional", expanded=False):
+    st.markdown(
+        "Área restrita para diagnóstico do pipeline, saúde da coleta e governança das fontes monitoradas."
+    )
+    senha_auditoria = st.text_input(
+        "Senha de auditoria",
+        type="password",
+        key="auditoria_password_input"
+    )
+    senha_correta_auditoria = st.secrets.get("ADMIN_PASSWORD", "senha_provisoria")
+
+    if senha_auditoria == senha_correta_auditoria:
+        st.success("Acesso liberado ao domínio de auditoria.")
+        tab_saude, tab_fontes = st.tabs([
+            "🩺 Saúde da coleta",
+            "🗂️ Gestão das fontes",
+        ])
+        with tab_saude:
+            renderizar_saude_coleta()
+        with tab_fontes:
+            renderizar_gestao_fontes()
+    else:
+        st.info("Insira a senha de administrador para visualizar os painéis de auditoria.")
