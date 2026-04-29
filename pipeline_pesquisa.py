@@ -235,6 +235,8 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
                categoria_publica, resumo, texto_completo
         FROM noticias
         WHERE titulo IS NOT NULL
+          AND COALESCE(caso_manual, FALSE) = FALSE
+          AND COALESCE(falso_positivo, FALSE) = FALSE
         ORDER BY COALESCE(data_publicacao, data_coleta), id
         LIMIT %s
     """, (limite,))
@@ -293,10 +295,11 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
             SET caso_id = %s,
                 similaridade_caso = %s
             WHERE id = %s
+              AND COALESCE(caso_manual, FALSE) = FALSE
             """,
             (caso_ids[cluster_idx], float(round(score, 3)), noticia_id),
         )
-        atualizados += 1
+        atualizados += cursor.rowcount
 
     conn.commit()
     logging.info(
@@ -496,7 +499,10 @@ def preparar_banco(conn) -> None:
             tipo_fonte       TEXT,
             regiao_fonte     TEXT,
             caso_id          TEXT,
-            similaridade_caso DOUBLE PRECISION
+            similaridade_caso DOUBLE PRECISION,
+            caso_manual      BOOLEAN DEFAULT FALSE,
+            data_curadoria_caso TIMESTAMPTZ,
+            observacao_curadoria_caso TEXT
         )
     """)
     cursor.execute("""
@@ -522,6 +528,10 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS regiao_fonte TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_id TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS similaridade_caso DOUBLE PRECISION",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS falso_positivo BOOLEAN DEFAULT FALSE",
     ]:
         cursor.execute(cmd)
     conn.commit()
@@ -643,15 +653,21 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
 def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicacao: bool = False) -> int:
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, titulo, fonte, data_coleta, url_fonte, resumo, texto_completo, data_publicacao
+        SELECT id, titulo, fonte, data_coleta, url_fonte, resumo, texto_completo,
+               data_publicacao, COALESCE(caso_manual, FALSE) AS caso_manual
         FROM noticias
         WHERE categoria_publica IS NULL
            OR eixos_analiticos IS NULL
            OR enquadramentos IS NULL
            OR tipo_fonte IS NULL
            OR regiao_fonte IS NULL
-           OR caso_id IS NULL
-           OR similaridade_caso IS NULL
+           OR (
+                COALESCE(caso_manual, FALSE) = FALSE
+                AND (
+                    caso_id IS NULL
+                    OR similaridade_caso IS NULL
+                )
+              )
            OR (%s = TRUE AND data_publicacao IS NULL AND url_fonte IS NOT NULL)
         ORDER BY id DESC
         LIMIT %s
@@ -659,10 +675,14 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
     rows = cursor.fetchall()
     atualizados = 0
     for row in rows:
-        noticia_id, titulo, fonte, data_coleta, url_fonte, resumo, texto_completo, data_publicacao_atual = row
+        (
+            noticia_id, titulo, fonte, data_coleta, url_fonte, resumo,
+            texto_completo, data_publicacao_atual, caso_manual
+        ) = row
         data_publicacao = data_publicacao_atual
         resumo_local = resumo
         texto_local = texto_completo
+
         if preencher_data_publicacao and not data_publicacao and url_fonte:
             try:
                 resumo_extraido, texto_extraido, data_extraida = extrair_texto_artigo(url_fonte)
@@ -671,7 +691,16 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
                 texto_local = texto_local or texto_extraido
             except Exception:
                 logging.exception("Falha no backfill de data_publicacao: noticia_id=%s", noticia_id)
-        campos = gerar_campos_analiticos(titulo or "", fonte or "", resumo_local or "", texto_local or "", data_publicacao, data_coleta)
+
+        campos = gerar_campos_analiticos(
+            titulo or "",
+            fonte or "",
+            resumo_local or "",
+            texto_local or "",
+            data_publicacao,
+            data_coleta,
+        )
+
         cursor.execute("""
             UPDATE noticias
             SET data_publicacao = COALESCE(%s, data_publicacao),
@@ -682,13 +711,35 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
                 enquadramentos = %s,
                 tipo_fonte = %s,
                 regiao_fonte = %s,
-                caso_id = %s,
-                similaridade_caso = %s
+                caso_id = CASE
+                    WHEN COALESCE(caso_manual, FALSE) = TRUE THEN caso_id
+                    ELSE %s
+                END,
+                similaridade_caso = CASE
+                    WHEN COALESCE(caso_manual, FALSE) = TRUE THEN similaridade_caso
+                    ELSE %s
+                END
             WHERE id = %s
-        """, (data_publicacao, resumo_local, texto_local, campos["categoria_publica"], campos["eixos_analiticos"], campos["enquadramentos"], campos["tipo_fonte"], campos["regiao_fonte"], campos["caso_id"], campos["similaridade_caso"], noticia_id))
-        atualizados += 1
+        """, (
+            data_publicacao,
+            resumo_local,
+            texto_local,
+            campos["categoria_publica"],
+            campos["eixos_analiticos"],
+            campos["enquadramentos"],
+            campos["tipo_fonte"],
+            campos["regiao_fonte"],
+            campos["caso_id"],
+            campos["similaridade_caso"],
+            noticia_id,
+        ))
+        atualizados += cursor.rowcount
+
     conn.commit()
-    logging.info("BACKFILL_ANALITICO: %s registros atualizados | preencher_data_publicacao=%s", atualizados, preencher_data_publicacao)
+    logging.info(
+        "BACKFILL_ANALITICO: %s registros atualizados | preencher_data_publicacao=%s",
+        atualizados, preencher_data_publicacao
+    )
     return atualizados
 
 
@@ -701,14 +752,6 @@ def coletar_noticias() -> None:
     backfill_limite = int(os.getenv("BACKFILL_LIMITE", "5000"))
     backfill_n = backfill_campos_analiticos(conn, limite=backfill_limite, preencher_data_publicacao=preencher_datas)
     print(f"Backfill analitico: {backfill_n} registros atualizados.")
-
-    if os.getenv("REAGRUPAR_CASOS_INICIO", "1") == "1":
-        reagrupar_casos_por_similaridade(
-            conn,
-            limite=int(os.getenv("CASOS_LIMITE", "10000")),
-            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "5")),
-            limiar=float(os.getenv("CASOS_LIMIAR", "0.38")),
-        )
 
     if os.getenv("REAGRUPAR_CASOS_INICIO", "1") == "1":
         reagrupar_casos_por_similaridade(

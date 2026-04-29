@@ -47,6 +47,17 @@ def get_engine():
     )
 
 
+def garantir_colunas_curadoria_casos(engine) -> None:
+    """
+    Garante as colunas usadas pela curadoria manual de casos.
+    A função é idempotente: pode ser chamada várias vezes sem alterar dados existentes.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT"))
+
+
 def _build_noticias_query(periodo_sql: str, limite: int):
     if periodo_sql == "tudo":
         query = text("""
@@ -2502,6 +2513,7 @@ else:
     with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
         if senha_digitada == senha_correta:
             engine = get_engine()
+            garantir_colunas_curadoria_casos(engine)
 
             if "chave_gestao" not in st.session_state:
                 st.session_state["chave_gestao"] = 0
@@ -2516,18 +2528,20 @@ else:
             # Define a query baseada no filtro
             if termo_gestao:
                 query_casos = text("""
-                    SELECT id, data_coleta, fonte, titulo, caso_id 
-                    FROM noticias 
-                    WHERE falso_positivo = FALSE
+                    SELECT id, data_coleta, fonte, titulo, caso_id,
+                           COALESCE(caso_manual, FALSE) AS caso_manual
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
                       AND (titulo ILIKE :termo OR fonte ILIKE :termo)
                     ORDER BY data_coleta DESC LIMIT :limite
                 """)
                 params_gestao = {"limite": limite_busca, "termo": f"%{termo_gestao}%"}
             else:
                 query_casos = text("""
-                    SELECT id, data_coleta, fonte, titulo, caso_id 
-                    FROM noticias 
-                    WHERE falso_positivo = FALSE
+                    SELECT id, data_coleta, fonte, titulo, caso_id,
+                           COALESCE(caso_manual, FALSE) AS caso_manual
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
                     ORDER BY data_coleta DESC LIMIT :limite
                 """)
                 params_gestao = {"limite": limite_busca}
@@ -2545,6 +2559,7 @@ else:
                     column_config={
                         "id": None,
                         "caso_id": "ID do Caso",
+                        "caso_manual": st.column_config.CheckboxColumn("Manual?", disabled=True),
                         "titulo": st.column_config.TextColumn("Título", width="large"),
                         "fonte": "Fonte"
                     },
@@ -2559,7 +2574,7 @@ else:
                 if indices_selecionados:
                     selecionados = df_casos.iloc[indices_selecionados]
                     ids_puros = [int(x) for x in selecionados["id"].tolist()]
-                    casos_unicos = selecionados["caso_id"].unique().tolist()
+                    casos_unicos = selecionados["caso_id"].dropna().astype(str).unique().tolist()
 
                     col1, col2 = st.columns(2)
                     with col1:
@@ -2569,10 +2584,21 @@ else:
                             try:
                                 with engine.begin() as conn:
                                     conn.execute(
-                                        text("UPDATE noticias SET caso_id = :mestre WHERE id = ANY(:ids)"),
-                                        {"mestre": mestre_escolhido, "ids": ids_puros}
+                                        text("""
+                                            UPDATE noticias
+                                            SET caso_id = :mestre,
+                                                caso_manual = TRUE,
+                                                data_curadoria_caso = NOW(),
+                                                observacao_curadoria_caso = :observacao
+                                            WHERE id = ANY(:ids)
+                                        """),
+                                        {
+                                            "mestre": mestre_escolhido,
+                                            "ids": ids_puros,
+                                            "observacao": "Unificação manual realizada no painel Streamlit",
+                                        }
                                     )
-                                st.success("Agrupamento realizado!")
+                                st.success("Agrupamento realizado e protegido contra reagrupamento automático!")
                                 st.session_state["chave_gestao"] += 1
                                 st.rerun()
                             except Exception as e:
@@ -2583,18 +2609,58 @@ else:
                         if st.button("Isolar em Novo Caso"):
                             import uuid
 
-                            novo_id = f"manual_{uuid.uuid4().hex[:8]}"
                             try:
                                 with engine.begin() as conn:
-                                    conn.execute(
-                                        text("UPDATE noticias SET caso_id = :novo WHERE id = ANY(:ids)"),
-                                        {"novo": novo_id, "ids": ids_puros}
-                                    )
-                                st.success("Notícias isoladas!")
+                                    for noticia_id in ids_puros:
+                                        novo_id = f"caso_manual_{noticia_id}_{uuid.uuid4().hex[:8]}"
+                                        conn.execute(
+                                            text("""
+                                                UPDATE noticias
+                                                SET caso_id = :novo,
+                                                    similaridade_caso = 1.0,
+                                                    caso_manual = TRUE,
+                                                    data_curadoria_caso = NOW(),
+                                                    observacao_curadoria_caso = :observacao
+                                                WHERE id = :id
+                                            """),
+                                            {
+                                                "novo": novo_id,
+                                                "id": int(noticia_id),
+                                                "observacao": "Separação manual realizada no painel Streamlit",
+                                            }
+                                        )
+                                st.success("Notícias isoladas em casos manuais protegidos!")
                                 st.session_state["chave_gestao"] += 1
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro: {e}")
+
+                    st.divider()
+                    st.markdown("#### 🔓 Liberar para reagrupamento automático")
+                    st.caption(
+                        "Use apenas quando quiser devolver as notícias selecionadas ao agrupamento automático do pipeline."
+                    )
+                    if st.button("Liberar seleção para reagrupamento automático"):
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("""
+                                        UPDATE noticias
+                                        SET caso_manual = FALSE,
+                                            data_curadoria_caso = NOW(),
+                                            observacao_curadoria_caso = :observacao
+                                        WHERE id = ANY(:ids)
+                                    """),
+                                    {
+                                        "ids": ids_puros,
+                                        "observacao": "Curadoria manual removida; liberado para reagrupamento automático",
+                                    }
+                                )
+                            st.success("Seleção liberada para reagrupamento automático.")
+                            st.session_state["chave_gestao"] += 1
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
             else:
                 st.write("Nenhuma notícia encontrada com este filtro.")
         else:
