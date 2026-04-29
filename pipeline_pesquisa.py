@@ -20,7 +20,7 @@ import psycopg2
 import requests
 import spacy
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
 from configuracao_buscas import PORTAIS_CONFIG
 
@@ -478,6 +478,83 @@ def classificar_titulo(titulo: str) -> tuple:
     return False, None, sim, "rejeitado_semantico"
 
 
+
+def classificar_erro_portal(exc: Exception) -> tuple[str, str]:
+    """
+    Classifica erros de coleta por fonte de modo legível para o painel Streamlit.
+    Retorna (tipo_erro, mensagem_curta).
+    """
+    tipo = "erro_geral"
+    mensagem = str(exc).strip() or exc.__class__.__name__
+
+    if isinstance(exc, requests.exceptions.Timeout):
+        tipo = "timeout_requests"
+    elif isinstance(exc, requests.exceptions.SSLError):
+        tipo = "ssl_requests"
+    elif isinstance(exc, requests.exceptions.ConnectionError):
+        tipo = "conexao_requests"
+    elif isinstance(exc, requests.exceptions.TooManyRedirects):
+        tipo = "redirecionamento_requests"
+    elif isinstance(exc, requests.exceptions.HTTPError):
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        tipo = f"http_{status_code}" if status_code else "http_requests"
+    elif isinstance(exc, PlaywrightTimeoutError):
+        tipo = "timeout_playwright"
+    elif isinstance(exc, PlaywrightError):
+        tipo = "erro_playwright"
+    elif isinstance(exc, KeyError):
+        tipo = "configuracao_incompleta"
+    elif isinstance(exc, ValueError):
+        tipo = "valor_invalido"
+
+    mensagem = re.sub(r"\s+", " ", mensagem)
+    if len(mensagem) > 300:
+        mensagem = mensagem[:297] + "..."
+    return tipo, mensagem
+
+
+def diagnosticar_fonte(
+    status: str,
+    tipo_erro: str = "",
+    extraidos: int = 0,
+    filtrados: int = 0,
+    inseridos: int = 0,
+    duplicados: int = 0,
+    erros_db: int = 0,
+) -> str:
+    """Gera uma leitura operacional curta para cada portal na rodada."""
+    status = (status or "").lower().strip()
+    tipo_erro = (tipo_erro or "").lower().strip()
+
+    if status == "erro":
+        if "timeout" in tipo_erro:
+            return "Timeout: portal demorou a responder; pode ser instabilidade, bloqueio ou página muito pesada."
+        if "http_403" in tipo_erro or "http_401" in tipo_erro:
+            return "Acesso bloqueado: provável restrição do portal ao robô/coletor."
+        if "http_404" in tipo_erro:
+            return "URL não encontrada: revisar endereço configurado."
+        if "http_5" in tipo_erro:
+            return "Erro do servidor do portal: tentar novamente em outra rodada."
+        if "playwright" in tipo_erro:
+            return "Falha no carregamento JavaScript/Playwright: revisar estratégia, tempo de espera ou seletor."
+        if "requests" in tipo_erro:
+            return "Falha na coleta por requests: revisar conexão, resposta HTTP ou bloqueio."
+        if "configuracao" in tipo_erro:
+            return "Configuração incompleta: revisar url, seletor ou estratégia em PORTAIS_CONFIG."
+        return "Falha geral no portal: consultar erro resumido e log completo."
+
+    if extraidos <= 0:
+        return "Sem títulos extraídos: revisar seletor CSS, estratégia de coleta ou carregamento dinâmico da página."
+    if filtrados <= 0:
+        return "Títulos extraídos, mas nenhum passou pelo filtro temático; provável ruído ou filtro muito restritivo para esta fonte."
+    if erros_db > 0:
+        return "Houve erro ao salvar uma ou mais notícias aceitas; verificar log e restrições do banco."
+    if inseridos <= 0 and duplicados > 0:
+        return "Fonte trouxe itens relevantes, mas todos já estavam no banco."
+    if inseridos > 0:
+        return "Fonte produtiva nesta rodada."
+    return "Fonte OK, sem novas inserções nesta rodada."
+
 def preparar_banco(conn) -> None:
     cursor = conn.cursor()
     cursor.execute("""
@@ -566,6 +643,8 @@ def preparar_banco(conn) -> None:
             fonte TEXT,
             status TEXT,
             erro TEXT,
+            tipo_erro TEXT,
+            diagnostico_fonte TEXT,
             extraidos INTEGER DEFAULT 0,
             filtrados INTEGER DEFAULT 0,
             alta_relevancia INTEGER DEFAULT 0,
@@ -579,6 +658,8 @@ def preparar_banco(conn) -> None:
             criado_em TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("ALTER TABLE pipeline_fontes ADD COLUMN IF NOT EXISTS tipo_erro TEXT")
+    cursor.execute("ALTER TABLE pipeline_fontes ADD COLUMN IF NOT EXISTS diagnostico_fonte TEXT")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_execucoes_inicio ON pipeline_execucoes (inicio DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_fontes_execucao ON pipeline_fontes (execucao_id)")
     conn.commit()
@@ -671,7 +752,7 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = REPORTS_DIR / f"resumo_fontes_{ts}.csv"
     fieldnames = [
-        "fonte", "status", "erro", "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
+        "fonte", "status", "erro", "tipo_erro", "diagnostico_fonte", "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
         "caso_sensivel", "inseridos", "duplicados", "erros_db", "taxa_filtragem_pct", "taxa_aproveitamento_pct"
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -684,6 +765,8 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
             "fonte": "TOTAL_GERAL",
             "status": "total",
             "erro": "",
+            "tipo_erro": "",
+            "diagnostico_fonte": "Resumo total da execução.",
             "extraidos": totais["extraidos"],
             "filtrados": totais["filtrados"],
             "alta_relevancia": totais["alta_relevancia"],
@@ -721,16 +804,18 @@ def salvar_resumos_fontes_db(conn, execucao_id: int, resumos_fontes: list[dict])
         for row in resumos_fontes:
             cursor.execute("""
                 INSERT INTO pipeline_fontes (
-                    execucao_id, fonte, status, erro, extraidos, filtrados,
+                    execucao_id, fonte, status, erro, tipo_erro, diagnostico_fonte, extraidos, filtrados,
                     alta_relevancia, relevancia_contextual, caso_sensivel,
                     inseridos, duplicados, erros_db, taxa_filtragem_pct, taxa_aproveitamento_pct
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 execucao_id,
                 row.get("fonte"),
                 row.get("status", "ok"),
                 row.get("erro", ""),
+                row.get("tipo_erro", ""),
+                row.get("diagnostico_fonte", ""),
                 int(row.get("extraidos", 0) or 0),
                 int(row.get("filtrados", 0) or 0),
                 int(row.get("alta_relevancia", 0) or 0),
@@ -1018,8 +1103,18 @@ def coletar_noticias() -> None:
 
             taxa_filtragem = round((filtrados / extraidos * 100), 2) if extraidos else 0.0
             taxa_aproveitamento = round((inseridos / filtrados * 100), 2) if filtrados else 0.0
+            diagnostico = diagnosticar_fonte(
+                status="ok",
+                tipo_erro="",
+                extraidos=extraidos,
+                filtrados=filtrados,
+                inseridos=inseridos,
+                duplicados=duplicados,
+                erros_db=erros_db,
+            )
             resumo_fonte = {
-                "fonte": nome, "status": "ok", "erro": "", "extraidos": extraidos, "filtrados": filtrados,
+                "fonte": nome, "status": "ok", "erro": "", "tipo_erro": "", "diagnostico_fonte": diagnostico,
+                "extraidos": extraidos, "filtrados": filtrados,
                 "alta_relevancia": alta, "relevancia_contextual": contextual, "caso_sensivel": sensivel,
                 "inseridos": inseridos, "duplicados": duplicados, "erros_db": erros_db,
                 "taxa_filtragem_pct": taxa_filtragem, "taxa_aproveitamento_pct": taxa_aproveitamento,
@@ -1028,22 +1123,32 @@ def coletar_noticias() -> None:
             print(f"[RESUMO {nome}] extraídos={extraidos} | filtrados={filtrados} | alta={alta} | contextual={contextual} | sensivel={sensivel} | inseridos={inseridos} | duplicados={duplicados} | erros_db={erros_db} | taxa_filtragem={taxa_filtragem}% | aproveitamento={taxa_aproveitamento}%")
             totais["portais_ok"] += 1
 
-        except Exception:
+        except Exception as e:
             try:
                 conn.rollback()
             except Exception:
                 pass
             totais["portais_erro"] += 1
-            erro_txt = "Falha geral no portal; ver pipeline_decisoes.log"
+            tipo_erro, erro_txt = classificar_erro_portal(e)
+            diagnostico = diagnosticar_fonte(
+                status="erro",
+                tipo_erro=tipo_erro,
+                extraidos=extraidos,
+                filtrados=filtrados,
+                inseridos=inseridos,
+                duplicados=duplicados,
+                erros_db=erros_db,
+            )
             resumos_fontes.append({
-                "fonte": nome, "status": "erro", "erro": erro_txt,
+                "fonte": nome, "status": "erro", "erro": erro_txt, "tipo_erro": tipo_erro,
+                "diagnostico_fonte": diagnostico,
                 "extraidos": extraidos, "filtrados": filtrados,
                 "alta_relevancia": alta, "relevancia_contextual": contextual, "caso_sensivel": sensivel,
                 "inseridos": inseridos, "duplicados": duplicados, "erros_db": erros_db,
                 "taxa_filtragem_pct": 0.0, "taxa_aproveitamento_pct": 0.0,
             })
-            logging.exception("ERRO NO PORTAL %s", nome)
-            print(f"[ERRO] {nome}. Veja o log.")
+            logging.exception("ERRO NO PORTAL %s | tipo_erro=%s | erro=%s", nome, tipo_erro, erro_txt)
+            print(f"[ERRO] {nome}: {tipo_erro}. {erro_txt}")
 
     if os.getenv("REAGRUPAR_CASOS_FINAL", "1") == "1":
         reagrupamento_final_n = reagrupar_casos_por_similaridade(

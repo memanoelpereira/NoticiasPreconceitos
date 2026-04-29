@@ -140,19 +140,43 @@ def carregar_saude_pipeline():
                 return pd.DataFrame(), pd.DataFrame(), None
 
             execucao_id = int(df_exec.iloc[0]["id"])
-            df_fontes = pd.read_sql(
-                text("""
-                    SELECT fonte, status, erro, extraidos, filtrados,
-                           alta_relevancia, relevancia_contextual, caso_sensivel,
-                           inseridos, duplicados, erros_db,
-                           taxa_filtragem_pct, taxa_aproveitamento_pct
-                    FROM pipeline_fontes
-                    WHERE execucao_id = :execucao_id
-                    ORDER BY status DESC, inseridos DESC, filtrados DESC, fonte
-                """),
-                conn,
-                params={"execucao_id": execucao_id}
-            )
+            try:
+                df_fontes = pd.read_sql(
+                    text("""
+                        SELECT fonte, status, erro, tipo_erro, diagnostico_fonte,
+                               extraidos, filtrados,
+                               alta_relevancia, relevancia_contextual, caso_sensivel,
+                               inseridos, duplicados, erros_db,
+                               taxa_filtragem_pct, taxa_aproveitamento_pct
+                        FROM pipeline_fontes
+                        WHERE execucao_id = :execucao_id
+                        ORDER BY status DESC, inseridos DESC, filtrados DESC, fonte
+                    """),
+                    conn,
+                    params={"execucao_id": execucao_id}
+                )
+            except Exception:
+                # Compatibilidade com a versão anterior da tabela, antes de tipo_erro/diagnostico_fonte.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                df_fontes = pd.read_sql(
+                    text("""
+                        SELECT fonte, status, erro, extraidos, filtrados,
+                               alta_relevancia, relevancia_contextual, caso_sensivel,
+                               inseridos, duplicados, erros_db,
+                               taxa_filtragem_pct, taxa_aproveitamento_pct
+                        FROM pipeline_fontes
+                        WHERE execucao_id = :execucao_id
+                        ORDER BY status DESC, inseridos DESC, filtrados DESC, fonte
+                    """),
+                    conn,
+                    params={"execucao_id": execucao_id}
+                )
+                df_fontes["tipo_erro"] = ""
+                df_fontes["diagnostico_fonte"] = "Diagnóstico não disponível nesta execução antiga."
+
 
         return df_exec, df_fontes, None
 
@@ -1318,6 +1342,29 @@ with st.expander("🩺 Saúde da coleta automática", expanded=False):
             st.caption(obs)
         st.caption(f"Início: {inicio_exec} | Fim: {fim_exec}")
 
+        # Alertas sintéticos da saúde da coleta
+        portais_erro_n = int(exec_row.get("portais_erro", 0) or 0)
+        extraidos_n = int(exec_row.get("extraidos", 0) or 0)
+        filtrados_n = int(exec_row.get("filtrados", 0) or 0)
+        inseridos_n = int(exec_row.get("inseridos", 0) or 0)
+        erros_db_n = int(exec_row.get("erros_db", 0) or 0)
+        taxa_filtragem_geral = (filtrados_n / extraidos_n * 100) if extraidos_n else 0.0
+        taxa_insercao_filtrados = (inseridos_n / filtrados_n * 100) if filtrados_n else 0.0
+
+        alertas_saude = []
+        if portais_erro_n > 0:
+            alertas_saude.append(f"⚠️ {portais_erro_n} portais apresentaram erro nesta execução.")
+        if extraidos_n > 0 and taxa_filtragem_geral < 1.0:
+            alertas_saude.append(f"ℹ️ A filtragem temática ficou abaixo de 1% ({taxa_filtragem_geral:.2f}%).")
+        if filtrados_n > 0 and taxa_insercao_filtrados < 25.0:
+            alertas_saude.append(f"ℹ️ Baixa inserção entre os títulos filtrados ({taxa_insercao_filtrados:.1f}%); muitos itens podem ser duplicados.")
+        if erros_db_n > 0:
+            alertas_saude.append(f"⚠️ {erros_db_n} erros ocorreram ao salvar notícias no banco.")
+        if not alertas_saude:
+            st.success("✅ Coleta sem alertas críticos nesta execução.")
+        else:
+            st.warning("\n\n".join(alertas_saude))
+
         if not df_fontes_pipeline.empty:
             df_fontes_vis = df_fontes_pipeline.copy()
             for col in [
@@ -1326,6 +1373,11 @@ with st.expander("🩺 Saúde da coleta automática", expanded=False):
             ]:
                 if col in df_fontes_vis.columns:
                     df_fontes_vis[col] = pd.to_numeric(df_fontes_vis[col], errors="coerce").fillna(0).astype(int)
+
+            for col in ["tipo_erro", "diagnostico_fonte", "erro"]:
+                if col not in df_fontes_vis.columns:
+                    df_fontes_vis[col] = ""
+                df_fontes_vis[col] = df_fontes_vis[col].fillna("").astype(str)
 
             fontes_erro = df_fontes_vis[df_fontes_vis["status"].astype(str).str.lower().eq("erro")].copy()
             fontes_zero = df_fontes_vis[
@@ -1340,7 +1392,7 @@ with st.expander("🩺 Saúde da coleta automática", expanded=False):
                     st.success("Nenhum portal com erro na última execução.")
                 else:
                     st.dataframe(
-                        fontes_erro[["fonte", "erro", "extraidos", "filtrados", "inseridos", "erros_db"]],
+                        fontes_erro[["fonte", "tipo_erro", "diagnostico_fonte", "erro", "extraidos", "filtrados", "inseridos", "erros_db"]],
                         use_container_width=True,
                         hide_index=True
                     )
@@ -1349,14 +1401,14 @@ with st.expander("🩺 Saúde da coleta automática", expanded=False):
                     st.success("Nenhum portal OK retornou zero títulos.")
                 else:
                     st.dataframe(
-                        fontes_zero[["fonte", "status", "extraidos", "filtrados", "inseridos"]],
+                        fontes_zero[["fonte", "status", "diagnostico_fonte", "extraidos", "filtrados", "inseridos"]],
                         use_container_width=True,
                         hide_index=True
                     )
             with t3:
                 st.dataframe(
                     fontes_produtivas[[
-                        "fonte", "status", "extraidos", "filtrados", "inseridos",
+                        "fonte", "status", "diagnostico_fonte", "extraidos", "filtrados", "inseridos",
                         "duplicados", "taxa_filtragem_pct", "taxa_aproveitamento_pct"
                     ]],
                     use_container_width=True,
