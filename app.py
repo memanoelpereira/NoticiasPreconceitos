@@ -2443,6 +2443,7 @@ else:
         # 2. Só exibe a tabela se a senha estiver correta
         # 2. Verificação de Senha
         if senha_digitada == senha_correta:
+            engine = get_engine()
 
             # --- CRIAMOS UMA BUSCA EXCLUSIVA PARA A CURADORIA ---
             termo_curadoria = st.text_input("🔍 Buscar notícia específica para curadoria:", key="busca_admin_cur")
@@ -2559,7 +2560,7 @@ else:
                 st.stop()
             st.markdown("Selecione as notícias na tabela para agrupá-las ou separá-las.")
 
-  
+
             if "chave_gestao" not in st.session_state:
                 st.session_state["chave_gestao"] = 0
 
