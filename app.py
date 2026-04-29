@@ -2559,20 +2559,29 @@ else:
                 if indices_selecionados:
                     selecionados = df_casos.iloc[indices_selecionados]
 
-                    # ---------------------------------------------------------
-                    # CONVERSÃO PARA PYTHON PURO (Evita que o PostgreSQL ignore o Numpy)
+                    # CONVERSÃO PARA PYTHON PURO
                     ids_brutos = selecionados["id"].tolist()
                     ids_puros = [int(x) if str(x).isdigit() else str(x) for x in ids_brutos]
-                    # ---------------------------------------------------------
 
                     st.write(f"**{len(ids_puros)} notícias prontas para ação.**")
+
+                    # EXTRAI OS IDs ÚNICOS DA SELEÇÃO PARA O USUÁRIO ESCOLHER O MESTRE
+                    casos_unicos = selecionados["caso_id"].unique().tolist()
 
                     col1, col2 = st.columns(2)
 
                     with col1:
-                        if st.button("🔗 Unificar no Primeiro Caso", type="primary"):
-                            id_mestre = selecionados.iloc[0]["caso_id"]
-                            mestre_puro = int(id_mestre) if str(id_mestre).isdigit() else str(id_mestre)
+                        st.markdown("#### 🔗 Unificar Casos")
+                        # Menu suspenso para escolha explícita do ID Mestre
+                        mestre_escolhido = st.selectbox(
+                            "Qual ID deve ser mantido? (Caso Mestre)",
+                            options=casos_unicos,
+                            help="Todas as notícias selecionadas acima serão movidas para este grupo."
+                        )
+
+                        if st.button("Unificar no Caso Mestre Selecionado", type="primary"):
+                            mestre_puro = int(mestre_escolhido) if str(mestre_escolhido).isdigit() else str(
+                                mestre_escolhido)
 
                             try:
                                 with engine.begin() as conn:
@@ -2580,14 +2589,17 @@ else:
                                         text("UPDATE noticias SET caso_id = :mestre WHERE id = ANY(:ids)"),
                                         {"mestre": mestre_puro, "ids": ids_puros}
                                     )
-                                st.success("Agrupamento realizado!")
-                                st.session_state["chave_gestao"] += 1  # Aumenta a chave (limpa tudo)
+                                st.success("Agrupamento realizado com segurança!")
+                                st.session_state["chave_gestao"] += 1
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro: {e}")
 
                     with col2:
-                        if st.button("✂️ Isolar em Novo Caso"):
+                        st.markdown("#### ✂️ Separar Casos")
+                        st.write("Cria um grupo totalmente novo para as notícias selecionadas.")
+
+                        if st.button("Isolar em Novo Caso"):
                             import uuid
 
                             novo_id_seguro = f"manual_{uuid.uuid4().hex[:8]}"
@@ -2598,8 +2610,8 @@ else:
                                         text("UPDATE noticias SET caso_id = :novo WHERE id = ANY(:ids)"),
                                         {"novo": novo_id_seguro, "ids": ids_puros}
                                     )
-                                st.success("Notícias isoladas!")
-                                st.session_state["chave_gestao"] += 1  # Aumenta a chave (limpa tudo)
+                                st.success("Notícias isoladas num novo grupo!")
+                                st.session_state["chave_gestao"] += 1
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erro: {e}")
