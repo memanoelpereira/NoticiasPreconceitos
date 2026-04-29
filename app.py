@@ -2506,77 +2506,96 @@ else:
         elif senha_digitada != "":
             st.error("Senha incorreta. Acesso negado.")
 
-    # ---------------------------------------------------------
-    # ABA DE GESTÃO DE CASOS (ADMIN)
-    # ---------------------------------------------------------
-    with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
-        st.markdown(
-            "Use esta área para fundir notícias que deveriam estar no mesmo grupo ou separar itens de casos distintos.")
+        # ---------------------------------------------------------
+        # ABA DE GESTÃO DE CASOS (ADMIN) - VERSÃO BLINDADA
+        # ---------------------------------------------------------
+        with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
+            st.markdown(
+                "Selecione as notícias na tabela para uni-las no mesmo caso ou para separá-las em um novo caso isolado. Zero digitação, 100% seguro.")
 
-        # 1. Verificação de Senha (reutilizando a lógica anterior)
-        if senha_digitada == senha_correta:
-            # Busca notícias recentes e seus respectivos caso_id
-            query_casos = text("""
-                SELECT id, data_coleta, fonte, titulo, caso_id 
-                FROM noticias 
-                WHERE falso_positivo = FALSE
-                ORDER BY data_coleta DESC LIMIT 100
-            """)
+            if senha_digitada == senha_correta:
+                query_casos = text("""
+                    SELECT id, data_coleta, fonte, titulo, caso_id 
+                    FROM noticias 
+                    WHERE falso_positivo = FALSE
+                    ORDER BY data_coleta DESC LIMIT 100
+                """)
 
-            try:
-                with engine.connect() as conn:
-                    df_casos = pd.read_sql(query_casos, conn)
-            except Exception as e:
-                st.error(f"Erro ao carregar casos: {e}")
-                st.stop()
+                try:
+                    with engine.connect() as conn:
+                        df_casos = pd.read_sql(query_casos, conn)
+                except Exception as e:
+                    st.error(f"Erro ao carregar casos: {e}")
+                    st.stop()
 
-            if not df_casos.empty:
-                st.info("Selecione as notícias que deseja agrupar ou alterar.")
+                if not df_casos.empty:
+                    # 1. Adicionamos uma coluna falsa de checkbox (que não vai para o banco)
+                    df_casos.insert(0, "selecionar", False)
 
-                # Editor para seleção de itens
-                df_selecao = st.data_editor(
-                    df_casos,
-                    column_config={
-                        "caso_id": st.column_config.TextColumn("ID do Caso (Editável)",
-                                                               help="Altere para o mesmo ID para agrupar"),
-                        "titulo": st.column_config.TextColumn("Título", width="large"),
-                        "fonte": "Fonte"
-                    },
-                    disabled=["id", "data_coleta", "fonte", "titulo"],
-                    hide_index=True,
-                    use_container_width=True,
-                    key="editor_gestao_casos"
-                )
+                    with st.form("form_gestao_casos"):
+                        # 2. O editor agora bloqueia TUDO, exceto a caixinha de seleção
+                        df_selecao = st.data_editor(
+                            df_casos,
+                            column_config={
+                                "selecionar": st.column_config.CheckboxColumn("Selecionar ✅", default=False),
+                                "caso_id": "ID do Caso",
+                                "titulo": st.column_config.TextColumn("Título", width="large"),
+                                "fonte": "Fonte"
+                            },
+                            disabled=["id", "data_coleta", "fonte", "titulo", "caso_id"],  # Ninguém digita nada
+                            hide_index=True,
+                            use_container_width=True
+                        )
 
-                col1, col2 = st.columns(2)
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            btn_agrupar = st.form_submit_button("🔗 Unificar Selecionadas", type="primary")
+                        with col2:
+                            btn_separar = st.form_submit_button("✂️ Isolar Selecionadas (Novo Caso)")
 
-                with col1:
-                    if st.button("Unificar Casos Selecionados", type="primary",
-                                 help="Aplica o ID do primeiro item selecionado a todos os outros"):
-                        # Pega as linhas onde o usuário mexeu ou selecionou (aqui usamos a lógica de IDs alterados)
-                        # Para simplificar, vamos permitir que o usuário digite o ID manualmente na tabela
-                        pass  # Ver lógica abaixo
+                    # 3. Lógica Executiva (Fora do Form)
+                    if btn_agrupar or btn_separar:
+                        import uuid  # Para gerar IDs únicos e seguros
 
-                st.warning(
-                    "Dica: Para mesclar, copie o 'caso_id' de uma notícia e cole no campo 'caso_id' da outra na tabela acima. Depois clique em 'Salvar Alterações'.")
+                        # Filtra apenas as linhas onde você marcou o "check"
+                        selecionados = df_selecao[df_selecao["selecionar"] == True]
 
-                if st.button("Salvar Alterações de Agrupamento"):
-                    # Comparamos o DF original com o editado para ver o que mudou no caso_id
-                    mudancas = df_selecao[df_selecao["caso_id"] != df_casos["caso_id"]]
+                        if selecionados.empty:
+                            st.warning("Selecione pelo menos uma notícia na caixinha antes de aplicar a ação.")
+                        else:
+                            ids_para_atualizar = selecionados["id"].tolist()
 
-                    if not mudancas.empty:
-                        try:
-                            with engine.begin() as conn:
-                                for _, row in mudancas.iterrows():
-                                    conn.execute(
-                                        text("UPDATE noticias SET caso_id = :novo_id WHERE id = :noticia_id"),
-                                        {"novo_id": row["caso_id"], "noticia_id": row["id"]}
-                                    )
-                            st.success(f"{len(mudancas)} notícias reagrupadas com sucesso!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao salvar: {e}")
+                            try:
+                                with engine.begin() as conn:
+                                    # AÇÃO: AGRUPAR
+                                    if btn_agrupar:
+                                        if len(ids_para_atualizar) < 2:
+                                            st.warning("Para agrupar, você precisa selecionar pelo menos 2 notícias.")
+                                        else:
+                                            # Pega o caso_id da PRIMEIRA notícia selecionada para ser o "mestre"
+                                            id_mestre = selecionados.iloc[0]["caso_id"]
+                                            conn.execute(
+                                                text("UPDATE noticias SET caso_id = :mestre WHERE id = ANY(:ids)"),
+                                                {"mestre": id_mestre, "ids": ids_para_atualizar}
+                                            )
+                                            st.success(
+                                                f"{len(ids_para_atualizar)} notícias unificadas com sucesso no caso raiz!")
+                                            st.rerun()
+
+                                    # AÇÃO: SEPARAR (Cria um novo ID aleatório seguro e atribui às selecionadas)
+                                    elif btn_separar:
+                                        novo_id_seguro = f"manual_{uuid.uuid4().hex[:8]}"
+                                        conn.execute(
+                                            text("UPDATE noticias SET caso_id = :novo WHERE id = ANY(:ids)"),
+                                            {"novo": novo_id_seguro, "ids": ids_para_atualizar}
+                                        )
+                                        st.success(f"Notícia(s) isolada(s) com sucesso em um novo caso!")
+                                        st.rerun()
+
+                            except Exception as e:
+                                st.error(f"Erro de banco de dados ao processar a ação: {e}")
+
+                else:
+                    st.write("Nenhuma notícia encontrada para gestão.")
             else:
-                st.write("Nenhuma notícia encontrada para gestão.")
-        else:
-            st.info("Insira a senha acima para gerir os grupos.")
+                st.info("Insira a senha de administrador na aba acima para gerir os grupos.")
