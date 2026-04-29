@@ -2483,17 +2483,24 @@ else:
                     modificados = df_editado[df_editado["falso_positivo"] == True]
 
                     if not modificados.empty:
-                        ids_para_ocultar = modificados["id"].tolist()
+                        # CONVERSÃO PARA PYTHON PURO (Cura o silêncio do banco)
+                        ids_brutos = modificados["id"].tolist()
+                        ids_puros = [int(x) if str(x).isdigit() else str(x) for x in ids_brutos]
+
                         update_query = text("""
                                             UPDATE noticias
                                             SET falso_positivo = TRUE
                                             WHERE id = ANY (:ids)
-                                            """)
+                                        """)
 
                         try:
                             with engine.begin() as conn:
-                                conn.execute(update_query, {"ids": ids_para_ocultar})
-                            st.success(f"{len(ids_para_ocultar)} notícias removidas! Atualizando painel...")
+                                conn.execute(update_query, {"ids": ids_puros})
+                            st.success(f"{len(ids_puros)} notícias removidas com sucesso! Atualizando...")
+
+                            # Se a sua tabela de curadoria se mantiver selecionada, adicione:
+                            # if "editor_curadoria" in st.session_state: del st.session_state["editor_curadoria"]
+
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao atualizar o banco: {e}")
@@ -2506,20 +2513,17 @@ else:
         elif senha_digitada != "":
             st.error("Senha incorreta. Acesso negado.")
 
-        # ---------------------------------------------------------
-        # ABA DE GESTÃO DE CASOS (ADMIN) - VERSÃO BLINDADA
-        # ---------------------------------------------------------
-            # ---------------------------------------------------------
-            # ABA DE GESTÃO DE CASOS (ADMIN) - VERSÃO NATIVA E SEGURA
-            # ---------------------------------------------------------
-        # ---------------------------------------------------------
-        # ABA DE GESTÃO DE CASOS (ADMIN) - VERSÃO NATIVA E SEGURA
-        # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # ABA DE GESTÃO DE CASOS (ADMIN) - BLINDADA E DINÂMICA
+    # ---------------------------------------------------------
     with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
         if senha_digitada == senha_correta:
-            st.markdown("Selecione as notícias na coluna à esquerda para realizar ações em massa.")
+            st.markdown("Selecione as notícias na tabela para agrupá-las ou separá-las.")
 
-            # 1. Buscamos os dados (Limitado a 50 para fluidez)
+            # TRUQUE DE MESTRE: Chave dinâmica para forçar a limpeza visual da tabela
+            if "chave_gestao" not in st.session_state:
+                st.session_state["chave_gestao"] = 0
+
             query_casos = text("""
                 SELECT id, data_coleta, fonte, titulo, caso_id 
                 FROM noticias 
@@ -2535,53 +2539,52 @@ else:
                 st.stop()
 
             if not df_casos.empty:
-                # 2. Mudança de data_editor para dataframe com on_select nativo
                 event = st.dataframe(
                     df_casos,
                     column_config={
-                        "id": None,  # Esconde o ID técnico invisivelmente
+                        "id": None,
                         "caso_id": "ID do Caso",
                         "titulo": st.column_config.TextColumn("Título", width="large"),
                         "fonte": "Fonte"
                     },
-                    on_select="rerun",  # Obrigatório para capturar os cliques
-                    selection_mode="multi-row",  # O Streamlit usa hífen aqui
+                    on_select="rerun",
+                    selection_mode="multi-row",
                     hide_index=True,
                     use_container_width=True,
-                    key="tabela_casos_nativa"
+                    key=f"tabela_gestao_{st.session_state['chave_gestao']}"  # A tabela muda de nome a cada ação
                 )
 
-                # 3. Capturamos as linhas selecionadas pelo evento de interface
                 indices_selecionados = event.selection.rows
 
                 if indices_selecionados:
-                    # Extraímos os dados reais apenas das linhas marcadas
                     selecionados = df_casos.iloc[indices_selecionados]
-                    ids_para_atualizar = selecionados["id"].tolist()
 
-                    st.write(f"**{len(ids_para_atualizar)} notícias selecionadas.**")
+                    # ---------------------------------------------------------
+                    # CONVERSÃO PARA PYTHON PURO (Evita que o PostgreSQL ignore o Numpy)
+                    ids_brutos = selecionados["id"].tolist()
+                    ids_puros = [int(x) if str(x).isdigit() else str(x) for x in ids_brutos]
+                    # ---------------------------------------------------------
+
+                    st.write(f"**{len(ids_puros)} notícias prontas para ação.**")
 
                     col1, col2 = st.columns(2)
 
                     with col1:
                         if st.button("🔗 Unificar no Primeiro Caso", type="primary"):
                             id_mestre = selecionados.iloc[0]["caso_id"]
+                            mestre_puro = int(id_mestre) if str(id_mestre).isdigit() else str(id_mestre)
 
                             try:
                                 with engine.begin() as conn:
                                     conn.execute(
                                         text("UPDATE noticias SET caso_id = :mestre WHERE id = ANY(:ids)"),
-                                        {"mestre": id_mestre, "ids": ids_para_atualizar}
+                                        {"mestre": mestre_puro, "ids": ids_puros}
                                     )
-                                st.success("Agrupamento realizado com sucesso!")
-
-                                # LIMPEZA DA SELEÇÃO ANTES DE RECARREGAR
-                                if "tabela_casos_nativa" in st.session_state:
-                                    del st.session_state["tabela_casos_nativa"]
+                                st.success("Agrupamento realizado!")
+                                st.session_state["chave_gestao"] += 1  # Aumenta a chave (limpa tudo)
                                 st.rerun()
-
                             except Exception as e:
-                                st.error(f"Erro na transação: {e}")
+                                st.error(f"Erro: {e}")
 
                     with col2:
                         if st.button("✂️ Isolar em Novo Caso"):
@@ -2593,17 +2596,13 @@ else:
                                 with engine.begin() as conn:
                                     conn.execute(
                                         text("UPDATE noticias SET caso_id = :novo WHERE id = ANY(:ids)"),
-                                        {"novo": novo_id_seguro, "ids": ids_para_atualizar}
+                                        {"novo": novo_id_seguro, "ids": ids_puros}
                                     )
-                                st.success("Notícias isoladas em um novo grupo!")
-
-                                # LIMPEZA DA SELEÇÃO ANTES DE RECARREGAR
-                                if "tabela_casos_nativa" in st.session_state:
-                                    del st.session_state["tabela_casos_nativa"]
+                                st.success("Notícias isoladas!")
+                                st.session_state["chave_gestao"] += 1  # Aumenta a chave (limpa tudo)
                                 st.rerun()
-
                             except Exception as e:
-                                st.error(f"Erro na transação: {e}")
+                                st.error(f"Erro: {e}")
                 else:
                     st.info("Selecione uma ou mais caixinhas na tabela para habilitar as ferramentas de gestão.")
             else:
