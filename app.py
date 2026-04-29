@@ -113,6 +113,53 @@ def carregar_dados(periodo_sql: str, limite: int):
         return pd.DataFrame(), pd.DataFrame(), 0, str(e)
 
 
+
+
+@st.cache_data(ttl=60)
+def carregar_saude_pipeline():
+    """
+    Lê o último diagnóstico gravado pelo pipeline no Supabase.
+    Retorna:
+    - df_exec: última execução
+    - df_fontes: desempenho por fonte na última execução
+    - erro: mensagem de erro, se as tabelas ainda não existirem ou se houver falha de conexão
+    """
+    try:
+        with get_engine().connect() as conn:
+            df_exec = pd.read_sql(
+                text("""
+                    SELECT *
+                    FROM pipeline_execucoes
+                    ORDER BY inicio DESC
+                    LIMIT 1
+                """),
+                conn
+            )
+
+            if df_exec.empty:
+                return pd.DataFrame(), pd.DataFrame(), None
+
+            execucao_id = int(df_exec.iloc[0]["id"])
+            df_fontes = pd.read_sql(
+                text("""
+                    SELECT fonte, status, erro, extraidos, filtrados,
+                           alta_relevancia, relevancia_contextual, caso_sensivel,
+                           inseridos, duplicados, erros_db,
+                           taxa_filtragem_pct, taxa_aproveitamento_pct
+                    FROM pipeline_fontes
+                    WHERE execucao_id = :execucao_id
+                    ORDER BY status DESC, inseridos DESC, filtrados DESC, fonte
+                """),
+                conn,
+                params={"execucao_id": execucao_id}
+            )
+
+        return df_exec, df_fontes, None
+
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame(), str(e)
+
+
 def safe_text(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "—"
@@ -1224,6 +1271,97 @@ m1.metric("Notícias na janela atual", total_noticias)
 m2.metric("Total no banco", total_banco)
 m3.metric("Entidades", total_entidades)
 m4.metric("Última coleta (Brasil)", data_mais_recente)
+
+# =========================
+# Saúde da coleta / GitHub Actions
+# =========================
+df_exec_pipeline, df_fontes_pipeline, erro_pipeline = carregar_saude_pipeline()
+
+with st.expander("🩺 Saúde da coleta automática", expanded=False):
+    if erro_pipeline:
+        st.info(
+            "Ainda não encontrei as tabelas de diagnóstico do pipeline. "
+            "Depois que o GitHub Actions rodar uma vez com o novo pipeline, este painel será preenchido. "
+            f"Detalhe técnico: {erro_pipeline}"
+        )
+    elif df_exec_pipeline.empty:
+        st.info("Ainda não há execução registrada do pipeline.")
+    else:
+        exec_row = df_exec_pipeline.iloc[0]
+        status_exec = str(exec_row.get("status", "—"))
+        inicio_exec = formatar_data_curta(exec_row.get("inicio"))
+        fim_exec = formatar_data_curta(exec_row.get("fim"))
+        duracao = exec_row.get("duracao_seg")
+        duracao_txt = "—" if pd.isna(duracao) else f"{float(duracao):.1f}s"
+
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Última execução", inicio_exec)
+        s2.metric("Status", status_exec)
+        s3.metric("Duração", duracao_txt)
+        s4.metric("Portais OK", int(exec_row.get("portais_ok", 0) or 0))
+        s5.metric("Portais com erro", int(exec_row.get("portais_erro", 0) or 0))
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Títulos extraídos", int(exec_row.get("extraidos", 0) or 0))
+        c2.metric("Títulos filtrados", int(exec_row.get("filtrados", 0) or 0))
+        c3.metric("Notícias novas", int(exec_row.get("inseridos", 0) or 0))
+        c4.metric("Duplicadas", int(exec_row.get("duplicados", 0) or 0))
+        c5.metric("Erros no banco", int(exec_row.get("erros_db", 0) or 0))
+
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Backfill atualizado", int(exec_row.get("backfill_atualizados", 0) or 0))
+        b2.metric("Casos reagrupados no início", int(exec_row.get("reagrupamento_inicio_atualizados", 0) or 0))
+        b3.metric("Casos reagrupados no final", int(exec_row.get("reagrupamento_final_atualizados", 0) or 0))
+
+        obs = exec_row.get("observacao")
+        if isinstance(obs, str) and obs.strip():
+            st.caption(obs)
+        st.caption(f"Início: {inicio_exec} | Fim: {fim_exec}")
+
+        if not df_fontes_pipeline.empty:
+            df_fontes_vis = df_fontes_pipeline.copy()
+            for col in [
+                "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
+                "caso_sensivel", "inseridos", "duplicados", "erros_db"
+            ]:
+                if col in df_fontes_vis.columns:
+                    df_fontes_vis[col] = pd.to_numeric(df_fontes_vis[col], errors="coerce").fillna(0).astype(int)
+
+            fontes_erro = df_fontes_vis[df_fontes_vis["status"].astype(str).str.lower().eq("erro")].copy()
+            fontes_zero = df_fontes_vis[
+                (df_fontes_vis["status"].astype(str).str.lower().eq("ok"))
+                & (df_fontes_vis["extraidos"] <= 0)
+            ].copy()
+            fontes_produtivas = df_fontes_vis.sort_values(["inseridos", "filtrados", "extraidos"], ascending=False).head(15)
+
+            t1, t2, t3 = st.tabs(["Fontes com erro", "Fontes sem títulos", "Fontes mais produtivas"])
+            with t1:
+                if fontes_erro.empty:
+                    st.success("Nenhum portal com erro na última execução.")
+                else:
+                    st.dataframe(
+                        fontes_erro[["fonte", "erro", "extraidos", "filtrados", "inseridos", "erros_db"]],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            with t2:
+                if fontes_zero.empty:
+                    st.success("Nenhum portal OK retornou zero títulos.")
+                else:
+                    st.dataframe(
+                        fontes_zero[["fonte", "status", "extraidos", "filtrados", "inseridos"]],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            with t3:
+                st.dataframe(
+                    fontes_produtivas[[
+                        "fonte", "status", "extraidos", "filtrados", "inseridos",
+                        "duplicados", "taxa_filtragem_pct", "taxa_aproveitamento_pct"
+                    ]],
+                    use_container_width=True,
+                    hide_index=True
+                )
 
 # =========================
 # Painel de acompanhamento no topo

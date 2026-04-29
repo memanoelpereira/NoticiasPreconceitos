@@ -534,6 +534,53 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS falso_positivo BOOLEAN DEFAULT FALSE",
     ]:
         cursor.execute(cmd)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_execucoes (
+            id BIGSERIAL PRIMARY KEY,
+            inicio TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            fim TIMESTAMPTZ,
+            status TEXT DEFAULT 'em_execucao',
+            duracao_seg DOUBLE PRECISION,
+            portais_total INTEGER DEFAULT 0,
+            portais_ok INTEGER DEFAULT 0,
+            portais_erro INTEGER DEFAULT 0,
+            extraidos INTEGER DEFAULT 0,
+            filtrados INTEGER DEFAULT 0,
+            alta_relevancia INTEGER DEFAULT 0,
+            relevancia_contextual INTEGER DEFAULT 0,
+            caso_sensivel INTEGER DEFAULT 0,
+            inseridos INTEGER DEFAULT 0,
+            duplicados INTEGER DEFAULT 0,
+            erros_db INTEGER DEFAULT 0,
+            backfill_atualizados INTEGER DEFAULT 0,
+            reagrupamento_inicio_atualizados INTEGER DEFAULT 0,
+            reagrupamento_final_atualizados INTEGER DEFAULT 0,
+            observacao TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_fontes (
+            id BIGSERIAL PRIMARY KEY,
+            execucao_id BIGINT REFERENCES pipeline_execucoes(id) ON DELETE CASCADE,
+            fonte TEXT,
+            status TEXT,
+            erro TEXT,
+            extraidos INTEGER DEFAULT 0,
+            filtrados INTEGER DEFAULT 0,
+            alta_relevancia INTEGER DEFAULT 0,
+            relevancia_contextual INTEGER DEFAULT 0,
+            caso_sensivel INTEGER DEFAULT 0,
+            inseridos INTEGER DEFAULT 0,
+            duplicados INTEGER DEFAULT 0,
+            erros_db INTEGER DEFAULT 0,
+            taxa_filtragem_pct DOUBLE PRECISION DEFAULT 0,
+            taxa_aproveitamento_pct DOUBLE PRECISION DEFAULT 0,
+            criado_em TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_execucoes_inicio ON pipeline_execucoes (inicio DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_fontes_execucao ON pipeline_fontes (execucao_id)")
     conn.commit()
 
 
@@ -624,7 +671,7 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = REPORTS_DIR / f"resumo_fontes_{ts}.csv"
     fieldnames = [
-        "fonte", "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
+        "fonte", "status", "erro", "extraidos", "filtrados", "alta_relevancia", "relevancia_contextual",
         "caso_sensivel", "inseridos", "duplicados", "erros_db", "taxa_filtragem_pct", "taxa_aproveitamento_pct"
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -635,6 +682,8 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
         writer.writerow({})
         writer.writerow({
             "fonte": "TOTAL_GERAL",
+            "status": "total",
+            "erro": "",
             "extraidos": totais["extraidos"],
             "filtrados": totais["filtrados"],
             "alta_relevancia": totais["alta_relevancia"],
@@ -648,6 +697,113 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
         })
     return path
 
+
+
+
+def registrar_inicio_execucao(conn) -> int:
+    """Registra o início de uma execução do pipeline no Supabase."""
+    with conn.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO pipeline_execucoes (inicio, status, observacao)
+            VALUES (CURRENT_TIMESTAMP, 'em_execucao', 'Pipeline iniciado pelo GitHub Actions ou execução manual')
+            RETURNING id
+        """)
+        execucao_id = cursor.fetchone()[0]
+    conn.commit()
+    return int(execucao_id)
+
+
+def salvar_resumos_fontes_db(conn, execucao_id: int, resumos_fontes: list[dict]) -> None:
+    """Grava o desempenho de cada portal na execução corrente."""
+    if not resumos_fontes:
+        return
+    with conn.cursor() as cursor:
+        for row in resumos_fontes:
+            cursor.execute("""
+                INSERT INTO pipeline_fontes (
+                    execucao_id, fonte, status, erro, extraidos, filtrados,
+                    alta_relevancia, relevancia_contextual, caso_sensivel,
+                    inseridos, duplicados, erros_db, taxa_filtragem_pct, taxa_aproveitamento_pct
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                execucao_id,
+                row.get("fonte"),
+                row.get("status", "ok"),
+                row.get("erro", ""),
+                int(row.get("extraidos", 0) or 0),
+                int(row.get("filtrados", 0) or 0),
+                int(row.get("alta_relevancia", 0) or 0),
+                int(row.get("relevancia_contextual", 0) or 0),
+                int(row.get("caso_sensivel", 0) or 0),
+                int(row.get("inseridos", 0) or 0),
+                int(row.get("duplicados", 0) or 0),
+                int(row.get("erros_db", 0) or 0),
+                float(row.get("taxa_filtragem_pct", 0) or 0),
+                float(row.get("taxa_aproveitamento_pct", 0) or 0),
+            ))
+    conn.commit()
+
+
+def finalizar_execucao_pipeline(
+    conn,
+    execucao_id: int,
+    totais: dict,
+    resumos_fontes: list[dict],
+    backfill_n: int = 0,
+    reagrupamento_inicio_n: int = 0,
+    reagrupamento_final_n: int = 0,
+    status: str = "ok",
+    observacao: str = "Pipeline finalizado"
+) -> None:
+    """Consolida o diagnóstico da rodada em tabelas legíveis pelo app Streamlit."""
+    try:
+        salvar_resumos_fontes_db(conn, execucao_id, resumos_fontes)
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE pipeline_execucoes
+                SET fim = CURRENT_TIMESTAMP,
+                    status = %s,
+                    duracao_seg = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - inicio)),
+                    portais_total = %s,
+                    portais_ok = %s,
+                    portais_erro = %s,
+                    extraidos = %s,
+                    filtrados = %s,
+                    alta_relevancia = %s,
+                    relevancia_contextual = %s,
+                    caso_sensivel = %s,
+                    inseridos = %s,
+                    duplicados = %s,
+                    erros_db = %s,
+                    backfill_atualizados = %s,
+                    reagrupamento_inicio_atualizados = %s,
+                    reagrupamento_final_atualizados = %s,
+                    observacao = %s
+                WHERE id = %s
+            """, (
+                status,
+                int(totais.get("portais_total", len(resumos_fontes)) or 0),
+                int(totais.get("portais_ok", 0) or 0),
+                int(totais.get("portais_erro", 0) or 0),
+                int(totais.get("extraidos", 0) or 0),
+                int(totais.get("filtrados", 0) or 0),
+                int(totais.get("alta_relevancia", 0) or 0),
+                int(totais.get("relevancia_contextual", 0) or 0),
+                int(totais.get("caso_sensivel", 0) or 0),
+                int(totais.get("inseridos", 0) or 0),
+                int(totais.get("duplicados", 0) or 0),
+                int(totais.get("erros_db", 0) or 0),
+                int(backfill_n or 0),
+                int(reagrupamento_inicio_n or 0),
+                int(reagrupamento_final_n or 0),
+                observacao,
+                int(execucao_id),
+            ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logging.exception("Falha ao registrar diagnóstico da execução do pipeline")
 
 
 def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicacao: bool = False) -> int:
@@ -746,6 +902,7 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
 def coletar_noticias() -> None:
     conn = psycopg2.connect(DB_URL)
     preparar_banco(conn)
+    execucao_id = registrar_inicio_execucao(conn)
 
 
     preencher_datas = os.getenv("BACKFILL_DATAS", "0").strip() == "1"
@@ -753,8 +910,10 @@ def coletar_noticias() -> None:
     backfill_n = backfill_campos_analiticos(conn, limite=backfill_limite, preencher_data_publicacao=preencher_datas)
     print(f"Backfill analitico: {backfill_n} registros atualizados.")
 
+    reagrupamento_inicio_n = 0
+    reagrupamento_final_n = 0
     if os.getenv("REAGRUPAR_CASOS_INICIO", "1") == "1":
-        reagrupar_casos_por_similaridade(
+        reagrupamento_inicio_n = reagrupar_casos_por_similaridade(
             conn,
             limite=int(os.getenv("CASOS_LIMITE", "10000")),
             janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "5")),
@@ -762,6 +921,15 @@ def coletar_noticias() -> None:
         )
 
     if os.getenv("BACKFILL_APENAS", "0") == "1":
+        totais_backfill = {
+            "portais_total": 0, "portais_ok": 0, "portais_erro": 0, "extraidos": 0, "filtrados": 0,
+            "alta_relevancia": 0, "relevancia_contextual": 0, "caso_sensivel": 0,
+            "inseridos": 0, "duplicados": 0, "erros_db": 0,
+        }
+        finalizar_execucao_pipeline(
+            conn, execucao_id, totais_backfill, [], backfill_n, reagrupamento_inicio_n, 0,
+            status="ok", observacao="BACKFILL_APENAS=1: coleta pulada"
+        )
         conn.close()
         print("BACKFILL_APENAS=1: campos analíticos e casos atualizados; coleta pulada.")
         return
@@ -770,6 +938,7 @@ def coletar_noticias() -> None:
     fuso_br = timezone(timedelta(hours=-3))
 
     totais = {
+        "portais_total": len(PORTAIS_CONFIG),
         "portais_ok": 0, "portais_erro": 0, "extraidos": 0, "filtrados": 0,
         "alta_relevancia": 0, "relevancia_contextual": 0, "caso_sensivel": 0,
         "inseridos": 0, "duplicados": 0, "erros_db": 0,
@@ -850,7 +1019,7 @@ def coletar_noticias() -> None:
             taxa_filtragem = round((filtrados / extraidos * 100), 2) if extraidos else 0.0
             taxa_aproveitamento = round((inseridos / filtrados * 100), 2) if filtrados else 0.0
             resumo_fonte = {
-                "fonte": nome, "extraidos": extraidos, "filtrados": filtrados,
+                "fonte": nome, "status": "ok", "erro": "", "extraidos": extraidos, "filtrados": filtrados,
                 "alta_relevancia": alta, "relevancia_contextual": contextual, "caso_sensivel": sensivel,
                 "inseridos": inseridos, "duplicados": duplicados, "erros_db": erros_db,
                 "taxa_filtragem_pct": taxa_filtragem, "taxa_aproveitamento_pct": taxa_aproveitamento,
@@ -865,17 +1034,33 @@ def coletar_noticias() -> None:
             except Exception:
                 pass
             totais["portais_erro"] += 1
+            erro_txt = "Falha geral no portal; ver pipeline_decisoes.log"
+            resumos_fontes.append({
+                "fonte": nome, "status": "erro", "erro": erro_txt,
+                "extraidos": extraidos, "filtrados": filtrados,
+                "alta_relevancia": alta, "relevancia_contextual": contextual, "caso_sensivel": sensivel,
+                "inseridos": inseridos, "duplicados": duplicados, "erros_db": erros_db,
+                "taxa_filtragem_pct": 0.0, "taxa_aproveitamento_pct": 0.0,
+            })
             logging.exception("ERRO NO PORTAL %s", nome)
             print(f"[ERRO] {nome}. Veja o log.")
 
     if os.getenv("REAGRUPAR_CASOS_FINAL", "1") == "1":
-        reagrupar_casos_por_similaridade(
+        reagrupamento_final_n = reagrupar_casos_por_similaridade(
             conn,
             limite=int(os.getenv("CASOS_LIMITE", "10000")),
             janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "10")),
             limiar=float(os.getenv("CASOS_LIMIAR", "0.45")),
         )
 
+    finalizar_execucao_pipeline(
+        conn, execucao_id, totais, resumos_fontes,
+        backfill_n=backfill_n,
+        reagrupamento_inicio_n=reagrupamento_inicio_n,
+        reagrupamento_final_n=reagrupamento_final_n,
+        status="ok",
+        observacao="Pipeline finalizado com sucesso"
+    )
     conn.close()
     csv_path = salvar_relatorio_csv(resumos_fontes, totais)
     print("\nResumo geral:")
