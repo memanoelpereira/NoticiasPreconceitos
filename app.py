@@ -2512,11 +2512,14 @@ else:
             # ---------------------------------------------------------
             # ABA DE GESTÃO DE CASOS (ADMIN) - VERSÃO NATIVA E SEGURA
             # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # ABA DE GESTÃO DE CASOS (ADMIN) - VERSÃO NATIVA E SEGURA
+        # ---------------------------------------------------------
     with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
         if senha_digitada == senha_correta:
             st.markdown("Selecione as notícias na coluna à esquerda para realizar ações em massa.")
 
-            # 1. Buscamos os dados (Reduzi para 50 para garantir fluidez total)
+            # 1. Buscamos os dados (Limitado a 50 para fluidez)
             query_casos = text("""
                 SELECT id, data_coleta, fonte, titulo, caso_id 
                 FROM noticias 
@@ -2532,19 +2535,20 @@ else:
                 st.stop()
 
             if not df_casos.empty:
-                # 2. Editor com Seleção Nativa (O retorno 'event' contém o estado da seleção)
-                event = st.data_editor(
+                # 2. Mudança de data_editor para dataframe com on_select nativo
+                event = st.dataframe(
                     df_casos,
                     column_config={
-                        "id": None,  # Esconde o ID técnico da visualização
-                        "caso_id": st.column_config.TextColumn("ID do Caso", disabled=True),
+                        "id": None,  # Esconde o ID técnico invisivelmente
+                        "caso_id": "ID do Caso",
                         "titulo": st.column_config.TextColumn("Título", width="large"),
                         "fonte": "Fonte"
                     },
-                    selection_mode="multi_row",  # Habilita os checkboxes nativos à esquerda
-                    hide_index=False,
+                    on_select="rerun",  # Obrigatório para capturar os cliques
+                    selection_mode="multi-row",  # O Streamlit usa hífen aqui
+                    hide_index=True,
                     use_container_width=True,
-                    key="editor_casos_nativo"
+                    key="tabela_casos_nativa"
                 )
 
                 # 3. Capturamos as linhas selecionadas pelo evento de interface
@@ -2592,7 +2596,7 @@ else:
                             except Exception as e:
                                 st.error(f"Erro na transação: {e}")
                 else:
-                    st.info("Selecione uma ou mais notícias para habilitar as ferramentas de gestão.")
+                    st.info("Selecione uma ou mais caixinhas na tabela para habilitar as ferramentas de gestão.")
             else:
                 st.write("Nenhuma notícia recente disponível para gestão.")
         else:
