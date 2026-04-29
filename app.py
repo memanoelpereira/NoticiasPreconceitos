@@ -2424,178 +2424,178 @@ else:
         else:
             st.info("Ainda não há entidades extraídas para exibir.")
 
-        # ---------------------------------------------------------
-        # ABA DE CURADORIA DE DADOS (ADMIN)
-        # ---------------------------------------------------------
-        st.divider()
-        with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
-            st.markdown("Área restrita. Insira a senha de administrador para gerir os falsos positivos.")
+    # ---------------------------------------------------------
+    # ABA DE CURADORIA DE DADOS (ADMIN)
+    # ---------------------------------------------------------
+    st.divider()
+    with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
+        st.markdown("Área restrita. Insira a senha de administrador para gerir os falsos positivos.")
 
-            senha_digitada = st.text_input("Senha de Acesso", type="password", key="admin_password_input")
-            senha_correta = st.secrets.get("ADMIN_PASSWORD", "senha_provisoria")
+        senha_digitada = st.text_input("Senha de Acesso", type="password", key="admin_password_input")
+        senha_correta = st.secrets.get("ADMIN_PASSWORD", "senha_provisoria")
 
-            if senha_digitada == senha_correta:
-                engine = get_engine()
+        if senha_digitada == senha_correta:
+            engine = get_engine()
 
-                # Busca exclusiva para curadoria
-                termo_curadoria = st.text_input("🔍 Buscar notícia específica para curadoria:", key="busca_admin_cur")
+            # Busca exclusiva para curadoria
+            termo_curadoria = st.text_input("🔍 Buscar notícia específica para curadoria:", key="busca_admin_cur")
 
-                if termo_curadoria:
-                    query_curadoria = text("""
-                        SELECT id, data_coleta, fonte, titulo, falso_positivo
-                        FROM noticias
-                        WHERE falso_positivo = FALSE
-                          AND (titulo ILIKE :termo OR fonte ILIKE :termo)
-                        ORDER BY data_coleta DESC LIMIT 100
-                    """)
-                    params_curadoria = {"termo": f"%{termo_curadoria}%"}
-                else:
-                    query_curadoria = text("""
-                        SELECT id, data_coleta, fonte, titulo, falso_positivo
-                        FROM noticias
-                        WHERE falso_positivo = FALSE
-                        ORDER BY data_coleta DESC LIMIT 100
-                    """)
-                    params_curadoria = {}
+            if termo_curadoria:
+                query_curadoria = text("""
+                    SELECT id, data_coleta, fonte, titulo, falso_positivo
+                    FROM noticias
+                    WHERE falso_positivo = FALSE
+                      AND (titulo ILIKE :termo OR fonte ILIKE :termo)
+                    ORDER BY data_coleta DESC LIMIT 100
+                """)
+                params_curadoria = {"termo": f"%{termo_curadoria}%"}
+            else:
+                query_curadoria = text("""
+                    SELECT id, data_coleta, fonte, titulo, falso_positivo
+                    FROM noticias
+                    WHERE falso_positivo = FALSE
+                    ORDER BY data_coleta DESC LIMIT 100
+                """)
+                params_curadoria = {}
 
-                try:
-                    with engine.connect() as conn:
-                        df_para_curar = pd.read_sql(query_curadoria, conn, params=params_curadoria)
-                except Exception as e:
-                    st.error(f"Erro ao carregar dados para curadoria: {e}")
-                    st.stop()
+            try:
+                with engine.connect() as conn:
+                    df_para_curar = pd.read_sql(query_curadoria, conn, params=params_curadoria)
+            except Exception as e:
+                st.error(f"Erro ao carregar dados para curadoria: {e}")
+                st.stop()
 
-                if not df_para_curar.empty:
-                    df_editado = st.data_editor(
-                        df_para_curar,
-                        column_config={
-                            "falso_positivo": st.column_config.CheckboxColumn("É Falso Positivo? 🗑️", default=False),
-                            "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
-                            "fonte": "Fonte da Notícia",
-                            "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
-                        },
-                        disabled=["id", "data_coleta", "fonte", "titulo"],
-                        hide_index=True,
-                        use_container_width=True,
-                        key="editor_curadoria"
-                    )
+            if not df_para_curar.empty:
+                df_editado = st.data_editor(
+                    df_para_curar,
+                    column_config={
+                        "falso_positivo": st.column_config.CheckboxColumn("É Falso Positivo? 🗑️", default=False),
+                        "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
+                        "fonte": "Fonte da Notícia",
+                        "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
+                    },
+                    disabled=["id", "data_coleta", "fonte", "titulo"],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_curadoria"
+                )
 
-                    if st.button("Salvar Curadoria", type="primary"):
-                        modificados = df_editado[df_editado["falso_positivo"] == True]
-                        if not modificados.empty:
-                            ids_puros = [int(x) for x in modificados["id"].tolist()]
+                if st.button("Salvar Curadoria", type="primary"):
+                    modificados = df_editado[df_editado["falso_positivo"] == True]
+                    if not modificados.empty:
+                        ids_puros = [int(x) for x in modificados["id"].tolist()]
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text("UPDATE noticias SET falso_positivo = TRUE WHERE id = ANY (:ids)"),
+                                    {"ids": ids_puros})
+                            st.success(f"{len(ids_puros)} notícias removidas!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar: {e}")
+            else:
+                st.info("Nenhuma notícia encontrada para curadoria.")
+
+    # ---------------------------------------------------------
+    # ABA DE GESTÃO DE CASOS (ADMIN)
+    # ---------------------------------------------------------
+    with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
+        if senha_digitada == senha_correta:
+            engine = get_engine()
+
+            if "chave_gestao" not in st.session_state:
+                st.session_state["chave_gestao"] = 0
+
+            # Filtros de busca e limite
+            col_busca, col_limite = st.columns([3, 1])
+            with col_busca:
+                termo_gestao = st.text_input("🔍 Filtrar casos por palavra-chave:", key="busca_admin_gest")
+            with col_limite:
+                limite_busca = st.selectbox("Limite de busca:", options=[50, 200, 500, 1000, 2000], index=1)
+
+            # Define a query baseada no filtro
+            if termo_gestao:
+                query_casos = text("""
+                    SELECT id, data_coleta, fonte, titulo, caso_id 
+                    FROM noticias 
+                    WHERE falso_positivo = FALSE
+                      AND (titulo ILIKE :termo OR fonte ILIKE :termo)
+                    ORDER BY data_coleta DESC LIMIT :limite
+                """)
+                params_gestao = {"limite": limite_busca, "termo": f"%{termo_gestao}%"}
+            else:
+                query_casos = text("""
+                    SELECT id, data_coleta, fonte, titulo, caso_id 
+                    FROM noticias 
+                    WHERE falso_positivo = FALSE
+                    ORDER BY data_coleta DESC LIMIT :limite
+                """)
+                params_gestao = {"limite": limite_busca}
+
+            try:
+                with engine.connect() as conn:
+                    df_casos = pd.read_sql(query_casos, conn, params=params_gestao)
+            except Exception as e:
+                st.error(f"Erro ao carregar casos: {e}")
+                st.stop()
+
+            if not df_casos.empty:
+                event = st.dataframe(
+                    df_casos,
+                    column_config={
+                        "id": None,
+                        "caso_id": "ID do Caso",
+                        "titulo": st.column_config.TextColumn("Título", width="large"),
+                        "fonte": "Fonte"
+                    },
+                    on_select="rerun",
+                    selection_mode="multi-row",
+                    hide_index=True,
+                    use_container_width=True,
+                    key=f"tabela_gestao_{st.session_state['chave_gestao']}"
+                )
+
+                indices_selecionados = event.selection.rows
+                if indices_selecionados:
+                    selecionados = df_casos.iloc[indices_selecionados]
+                    ids_puros = [int(x) for x in selecionados["id"].tolist()]
+                    casos_unicos = selecionados["caso_id"].unique().tolist()
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("#### 🔗 Unificar Casos")
+                        mestre_escolhido = st.selectbox("Manter qual ID? (Caso Mestre)", options=casos_unicos)
+                        if st.button("Unificar no Mestre", type="primary"):
                             try:
                                 with engine.begin() as conn:
                                     conn.execute(
-                                        text("UPDATE noticias SET falso_positivo = TRUE WHERE id = ANY (:ids)"),
-                                        {"ids": ids_puros})
-                                st.success(f"{len(ids_puros)} notícias removidas!")
+                                        text("UPDATE noticias SET caso_id = :mestre WHERE id = ANY(:ids)"),
+                                        {"mestre": mestre_escolhido, "ids": ids_puros}
+                                    )
+                                st.success("Agrupamento realizado!")
+                                st.session_state["chave_gestao"] += 1
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Erro ao atualizar: {e}")
-                else:
-                    st.info("Nenhuma notícia encontrada para curadoria.")
+                                st.error(f"Erro: {e}")
 
-        # ---------------------------------------------------------
-        # ABA DE GESTÃO DE CASOS (ADMIN)
-        # ---------------------------------------------------------
-        with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
-            if senha_digitada == senha_correta:
-                engine = get_engine()
+                    with col2:
+                        st.markdown("#### ✂️ Separar Casos")
+                        if st.button("Isolar em Novo Caso"):
+                            import uuid
 
-                if "chave_gestao" not in st.session_state:
-                    st.session_state["chave_gestao"] = 0
-
-                # Filtros de busca e limite
-                col_busca, col_limite = st.columns([3, 1])
-                with col_busca:
-                    termo_gestao = st.text_input("🔍 Filtrar casos por palavra-chave:", key="busca_admin_gest")
-                with col_limite:
-                    limite_busca = st.selectbox("Limite de busca:", options=[50, 200, 500, 1000, 2000], index=1)
-
-                # Define a query baseada no filtro
-                if termo_gestao:
-                    query_casos = text("""
-                        SELECT id, data_coleta, fonte, titulo, caso_id 
-                        FROM noticias 
-                        WHERE falso_positivo = FALSE
-                          AND (titulo ILIKE :termo OR fonte ILIKE :termo)
-                        ORDER BY data_coleta DESC LIMIT :limite
-                    """)
-                    params_gestao = {"limite": limite_busca, "termo": f"%{termo_gestao}%"}
-                else:
-                    query_casos = text("""
-                        SELECT id, data_coleta, fonte, titulo, caso_id 
-                        FROM noticias 
-                        WHERE falso_positivo = FALSE
-                        ORDER BY data_coleta DESC LIMIT :limite
-                    """)
-                    params_gestao = {"limite": limite_busca}
-
-                try:
-                    with engine.connect() as conn:
-                        df_casos = pd.read_sql(query_casos, conn, params=params_gestao)
-                except Exception as e:
-                    st.error(f"Erro ao carregar casos: {e}")
-                    st.stop()
-
-                if not df_casos.empty:
-                    event = st.dataframe(
-                        df_casos,
-                        column_config={
-                            "id": None,
-                            "caso_id": "ID do Caso",
-                            "titulo": st.column_config.TextColumn("Título", width="large"),
-                            "fonte": "Fonte"
-                        },
-                        on_select="rerun",
-                        selection_mode="multi-row",
-                        hide_index=True,
-                        use_container_width=True,
-                        key=f"tabela_gestao_{st.session_state['chave_gestao']}"
-                    )
-
-                    indices_selecionados = event.selection.rows
-                    if indices_selecionados:
-                        selecionados = df_casos.iloc[indices_selecionados]
-                        ids_puros = [int(x) for x in selecionados["id"].tolist()]
-                        casos_unicos = selecionados["caso_id"].unique().tolist()
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown("#### 🔗 Unificar Casos")
-                            mestre_escolhido = st.selectbox("Manter qual ID? (Caso Mestre)", options=casos_unicos)
-                            if st.button("Unificar no Mestre", type="primary"):
-                                try:
-                                    with engine.begin() as conn:
-                                        conn.execute(
-                                            text("UPDATE noticias SET caso_id = :mestre WHERE id = ANY(:ids)"),
-                                            {"mestre": mestre_escolhido, "ids": ids_puros}
-                                        )
-                                    st.success("Agrupamento realizado!")
-                                    st.session_state["chave_gestao"] += 1
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Erro: {e}")
-
-                        with col2:
-                            st.markdown("#### ✂️ Separar Casos")
-                            if st.button("Isolar em Novo Caso"):
-                                import uuid
-
-                                novo_id = f"manual_{uuid.uuid4().hex[:8]}"
-                                try:
-                                    with engine.begin() as conn:
-                                        conn.execute(
-                                            text("UPDATE noticias SET caso_id = :novo WHERE id = ANY(:ids)"),
-                                            {"novo": novo_id, "ids": ids_puros}
-                                        )
-                                    st.success("Notícias isoladas!")
-                                    st.session_state["chave_gestao"] += 1
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Erro: {e}")
-                else:
-                    st.write("Nenhuma notícia encontrada com este filtro.")
+                            novo_id = f"manual_{uuid.uuid4().hex[:8]}"
+                            try:
+                                with engine.begin() as conn:
+                                    conn.execute(
+                                        text("UPDATE noticias SET caso_id = :novo WHERE id = ANY(:ids)"),
+                                        {"novo": novo_id, "ids": ids_puros}
+                                    )
+                                st.success("Notícias isoladas!")
+                                st.session_state["chave_gestao"] += 1
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erro: {e}")
             else:
-                st.info("Insira a senha de administrador.")
+                st.write("Nenhuma notícia encontrada com este filtro.")
+        else:
+            st.info("Insira a senha de administrador.")
