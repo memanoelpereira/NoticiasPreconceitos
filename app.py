@@ -2528,7 +2528,7 @@ else:
                 SELECT id, data_coleta, fonte, titulo, caso_id 
                 FROM noticias 
                 WHERE falso_positivo = FALSE
-                ORDER BY data_coleta DESC LIMIT 50
+                ORDER BY data_coleta DESC LIMIT 500
             """)
 
             try:
