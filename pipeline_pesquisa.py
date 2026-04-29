@@ -829,8 +829,8 @@ def coletar_noticias() -> None:
         reagrupar_casos_por_similaridade(
             conn,
             limite=int(os.getenv("CASOS_LIMITE", "10000")),
-            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "5")),
-            limiar=float(os.getenv("CASOS_LIMIAR", "0.38")),
+            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "10")),
+            limiar=float(os.getenv("CASOS_LIMIAR", "0.45")),
         )
 
     conn.close()

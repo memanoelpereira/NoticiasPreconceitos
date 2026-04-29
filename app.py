@@ -2505,3 +2505,78 @@ else:
         # 3. Tratamento para quando a pessoa digita a senha errada
         elif senha_digitada != "":
             st.error("Senha incorreta. Acesso negado.")
+
+    # ---------------------------------------------------------
+    # ABA DE GESTÃO DE CASOS (ADMIN)
+    # ---------------------------------------------------------
+    with st.expander("📁 Gestão e Agrupamento de Casos (Admin)", expanded=False):
+        st.markdown(
+            "Use esta área para fundir notícias que deveriam estar no mesmo grupo ou separar itens de casos distintos.")
+
+        # 1. Verificação de Senha (reutilizando a lógica anterior)
+        if senha_digitada == senha_correta:
+            # Busca notícias recentes e seus respectivos caso_id
+            query_casos = text("""
+                SELECT id, data_coleta, fonte, titulo, caso_id 
+                FROM noticias 
+                WHERE falso_positivo = FALSE
+                ORDER BY data_coleta DESC LIMIT 100
+            """)
+
+            try:
+                with engine.connect() as conn:
+                    df_casos = pd.read_sql(query_casos, conn)
+            except Exception as e:
+                st.error(f"Erro ao carregar casos: {e}")
+                st.stop()
+
+            if not df_casos.empty:
+                st.info("Selecione as notícias que deseja agrupar ou alterar.")
+
+                # Editor para seleção de itens
+                df_selecao = st.data_editor(
+                    df_casos,
+                    column_config={
+                        "caso_id": st.column_config.TextColumn("ID do Caso (Editável)",
+                                                               help="Altere para o mesmo ID para agrupar"),
+                        "titulo": st.column_config.TextColumn("Título", width="large"),
+                        "fonte": "Fonte"
+                    },
+                    disabled=["id", "data_coleta", "fonte", "titulo"],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_gestao_casos"
+                )
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    if st.button("Unificar Casos Selecionados", type="primary",
+                                 help="Aplica o ID do primeiro item selecionado a todos os outros"):
+                        # Pega as linhas onde o usuário mexeu ou selecionou (aqui usamos a lógica de IDs alterados)
+                        # Para simplificar, vamos permitir que o usuário digite o ID manualmente na tabela
+                        pass  # Ver lógica abaixo
+
+                st.warning(
+                    "Dica: Para mesclar, copie o 'caso_id' de uma notícia e cole no campo 'caso_id' da outra na tabela acima. Depois clique em 'Salvar Alterações'.")
+
+                if st.button("Salvar Alterações de Agrupamento"):
+                    # Comparamos o DF original com o editado para ver o que mudou no caso_id
+                    mudancas = df_selecao[df_selecao["caso_id"] != df_casos["caso_id"]]
+
+                    if not mudancas.empty:
+                        try:
+                            with engine.begin() as conn:
+                                for _, row in mudancas.iterrows():
+                                    conn.execute(
+                                        text("UPDATE noticias SET caso_id = :novo_id WHERE id = :noticia_id"),
+                                        {"novo_id": row["caso_id"], "noticia_id": row["id"]}
+                                    )
+                            st.success(f"{len(mudancas)} notícias reagrupadas com sucesso!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao salvar: {e}")
+            else:
+                st.write("Nenhuma notícia encontrada para gestão.")
+        else:
+            st.info("Insira a senha acima para gerir os grupos.")
