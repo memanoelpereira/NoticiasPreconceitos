@@ -71,6 +71,71 @@ def normalizar_texto(texto: str) -> str:
 # Cria vetores individuais para não diluir o sentido semântico (correção da falha do spaCy)
 CONCEITOS_ALVO = [nlp(termo) for termo in TERMOS_ALVO_SPACY]
 
+VERSAO_CRITERIO_FILTRO_ATUAL = "v2_taxonomia_criterios"
+
+MAPA_CRITERIOS_FILTRO_V2 = {
+    # Inclusões por regra explícita/relacional/contextual
+    "gatilho_forte": "inclusao_explicita_gatilho",
+    "grupo+conflito": "inclusao_grupo_conflito",
+    "contexto+conflito": "inclusao_contexto_conflito",
+    "contexto+grupo+expressao": "inclusao_contexto_grupo_expressao",
+    "expressao+ancora": "inclusao_expressao_ancorada",
+    "tema_popular_estrito": "inclusao_popular_estrita",
+    "tema_popular+marcador_social": "inclusao_popular_marcador_social",
+
+    # Inclusões por similaridade semântica
+    "vetor_dois_sinais": "inclusao_semantica_vetor_dois_sinais",
+    "vetor_um_sinal": "inclusao_semantica_vetor_um_sinal",
+    "vetor_isolado": "inclusao_semantica_vetor_isolado",
+
+    # Exclusões e rejeições
+    "vazio": "exclusao_vazio",
+    "blacklist_exata": "exclusao_blacklist_exata",
+    "blacklist_fragmento": "exclusao_fragmento",
+    "curto": "exclusao_titulo_curto",
+    "baixo_conteudo": "exclusao_baixo_conteudo",
+    "ruido_esportivo": "exclusao_ruido_esportivo",
+    "ruido_economico": "exclusao_ruido_economico",
+    "ruido_cultural": "exclusao_ruido_cultural",
+    "violencia_generica": "exclusao_violencia_generica",
+    "sem_vetor": "exclusao_sem_vetor",
+    "aprendizado_curadoria": "exclusao_aprendizado_curadoria",
+    "rejeitado_semantico": "exclusao_semantica_insuficiente",
+}
+
+CRITERIOS_FILTRO_V2 = set(MAPA_CRITERIOS_FILTRO_V2.values())
+
+
+def normalizar_criterio_filtro(criterio: str) -> str:
+    """
+    Converte critérios legados para a taxonomia v2.
+    Se o critério já estiver na taxonomia v2, ele é preservado.
+    Critérios desconhecidos também são preservados para não apagar informação.
+    """
+    if criterio is None:
+        return criterio
+    criterio = str(criterio).strip()
+    if not criterio:
+        return criterio
+    return MAPA_CRITERIOS_FILTRO_V2.get(criterio, criterio)
+
+
+def calcular_data_referencia(data_publicacao=None, data_coleta=None):
+    """
+    Define a data analítica estável do registro.
+    Prioriza a data de publicação; quando ausente, usa a data de coleta.
+    """
+    data_ref = data_publicacao or data_coleta
+    if data_publicacao:
+        origem = "publicacao"
+    elif data_coleta:
+        origem = "coleta"
+    else:
+        origem = "indefinida"
+    return data_ref, origem
+
+
+
 def contem_algum(texto: str, lista_termos) -> bool:
     """Verifica se algum dos termos da lista está contido no texto."""
     if not texto:
@@ -214,16 +279,6 @@ def _data_referencia_cluster(data_publicacao, data_coleta):
         return None
 
 
-
-
-def calcular_data_referencia(data_publicacao: Optional[datetime], data_coleta: Optional[datetime]) -> tuple[Optional[datetime], str]:
-    """Define a data estável para análises temporais: publicação, quando disponível; senão coleta."""
-    if data_publicacao:
-        return data_publicacao, "publicacao"
-    if data_coleta:
-        return data_coleta, "coleta"
-    return None, "indefinida"
-
 def _distancia_dias(d1, d2) -> int:
     if d1 is None or d2 is None:
         return 999999
@@ -366,7 +421,7 @@ def extrair_data_publicacao_soup(soup: BeautifulSoup) -> Optional[datetime]:
 
 def gerar_campos_analiticos(titulo: str, fonte: str, resumo: str = "", texto_completo: str = "", data_publicacao: Optional[datetime] = None, data_coleta: Optional[datetime] = None) -> dict:
     categoria = classificar_categoria_publica(titulo, resumo, texto_completo)
-    data_ref = data_publicacao or data_coleta
+    data_ref, origem_data_ref = calcular_data_referencia(data_publicacao, data_coleta)
     return {
         "categoria_publica": categoria,
         "eixos_analiticos": classificar_eixos_analiticos(titulo, resumo, texto_completo),
@@ -375,24 +430,26 @@ def gerar_campos_analiticos(titulo: str, fonte: str, resumo: str = "", texto_com
         "regiao_fonte": inferir_regiao_fonte(fonte),
         "caso_id": criar_caso_id(titulo, categoria, data_ref, resumo),
         "similaridade_caso": estimar_similaridade_caso(titulo, resumo),
+        "data_referencia": data_ref,
+        "origem_data_referencia": origem_data_ref,
     }
 
 
 def classificar_titulo(titulo: str) -> tuple:
     t = normalizar_texto(titulo)
     if not t:
-        return False, None, 0.0, "vazio"
+        return False, None, 0.0, "exclusao_vazio"
 
     if t in BLACKLIST_EXATA:
-        return False, None, 0.0, "blacklist_exata"
+        return False, None, 0.0, "exclusao_blacklist_exata"
     if contem_algum(t, BLACKLIST_FRAGMENTOS):
-        return False, None, 0.0, "blacklist_fragmento"
+        return False, None, 0.0, "exclusao_fragmento"
     if contem_algum(t, TEMAS_POPULARES_SENSIVEIS) and contem_algum(t, MARCADORES_POPULARES_ESTRITOS):
-        return True, "caso_sensivel", 0.86, "tema_popular_estrito"
+        return True, "caso_sensivel", 0.86, "inclusao_popular_estrita"
     if len(t.split()) < 5:
-        return False, None, 0.0, "curto"
+        return False, None, 0.0, "exclusao_titulo_curto"
     if len("".join(c for c in t if c.isalpha())) < 20:
-        return False, None, 0.0, "baixo_conteudo"
+        return False, None, 0.0, "exclusao_baixo_conteudo"
 
     tem_gatilho  = contem_algum(t, GATILHOS_FORTES)
     tem_grupo    = contem_algum(t, GRUPOS_SOCIAIS)
@@ -407,44 +464,44 @@ def classificar_titulo(titulo: str) -> tuple:
         (tem_contexto and tem_conflito) or
         (tem_tema_popular and tem_marcador_popular)
     ):
-        return False, None, 0.0, "ruido_esportivo"
+        return False, None, 0.0, "exclusao_ruido_esportivo"
 
     if contem_algum(t, BLACKLIST_ECONOMICA) and not tem_gatilho:
-        return False, None, 0.0, "ruido_economico"
+        return False, None, 0.0, "exclusao_ruido_economico"
 
     if contem_algum(t, BLACKLIST_CULTURAL) and not (
         tem_gatilho or
         tem_conflito or
         (tem_tema_popular and tem_marcador_popular)
     ):
-        return False, None, 0.0, "ruido_cultural"
+        return False, None, 0.0, "exclusao_ruido_cultural"
 
     if contem_algum(t, BLACKLIST_VIOLENCIA_GENERICA) and not (tem_gatilho or (tem_grupo and tem_conflito)):
-        return False, None, 0.0, "violencia_generica"
+        return False, None, 0.0, "exclusao_violencia_generica"
 
     if tem_gatilho:
-        return True, "alta_relevancia", 1.0, "gatilho_forte"
+        return True, "alta_relevancia", 1.0, "inclusao_explicita_gatilho"
 
     if tem_grupo and tem_conflito:
-        return True, "alta_relevancia", 0.95, "grupo+conflito"
+        return True, "alta_relevancia", 0.95, "inclusao_grupo_conflito"
 
     if tem_contexto and tem_conflito:
-        return True, "alta_relevancia", 0.92, "contexto+conflito"
+        return True, "alta_relevancia", 0.92, "inclusao_contexto_conflito"
 
     if tem_contexto and tem_grupo and tem_expressao:
-        return True, "caso_sensivel", 0.88, "contexto+grupo+expressao"
+        return True, "caso_sensivel", 0.88, "inclusao_contexto_grupo_expressao"
 
     if tem_expressao and (tem_grupo or tem_contexto):
-        return True, "caso_sensivel", 0.85, "expressao+ancora"
+        return True, "caso_sensivel", 0.85, "inclusao_expressao_ancorada"
 
     if tem_tema_popular and tem_marcador_popular:
-        return True, "caso_sensivel", 0.86, "tema_popular+marcador_social"
+        return True, "caso_sensivel", 0.86, "inclusao_popular_marcador_social"
 
     sim = calcular_similaridade_focada(t)
 
     if sim == 0.0:
         logging.info("REJEITADO (sem_vetor) - %s", titulo)
-        return False, None, 0.0, "sem_vetor"
+        return False, None, 0.0, "exclusao_sem_vetor"
 
         # -------------------------------------------------------------
         # 🧠 APRENDIZADO DE MÁQUINA: Bloqueio por Memória de Curadoria
@@ -459,7 +516,7 @@ def classificar_titulo(titulo: str) -> tuple:
 
                     if sim_com_lixo and max(sim_com_lixo) >= 0.88:
                         logging.info("REJEITADO (aprendizado_curadoria: %.3f) - %s", max(sim_com_lixo), titulo)
-                        return False, None, max(sim_com_lixo), "aprendizado_curadoria"
+                        return False, None, max(sim_com_lixo), "exclusao_aprendizado_curadoria"
         except Exception as e:
             logging.error(f"Erro no módulo de aprendizado para o título '{titulo}': {e}")
         # -------------------------------------------------------------
@@ -469,23 +526,23 @@ def classificar_titulo(titulo: str) -> tuple:
     # RÉGUA SUBIU: De 0.63 para 0.73
     if n_sinais >= 2 and sim >= 0.73:
         logging.info("ACEITO (vetor_dois_sinais: %.3f) - %s", sim, titulo)
-        return True, "relevancia_contextual", sim, "vetor_dois_sinais"
+        return True, "relevancia_contextual", sim, "inclusao_semantica_vetor_dois_sinais"
 
     # RÉGUA SUBIU: De 0.70 para 0.80
     if n_sinais == 1 and sim >= 0.80:
         logging.info("ACEITO (vetor_um_sinal: %.3f) - %s", sim, titulo)
-        return True, "relevancia_contextual", sim, "vetor_um_sinal"
+        return True, "relevancia_contextual", sim, "inclusao_semantica_vetor_um_sinal"
 
     # RÉGUA SUBIU: De 0.78 para 0.86 (Texto sem sinais precisa ser MUITO óbvio)
     if n_sinais == 0 and sim >= 0.86:
         logging.info("ACEITO (vetor_isolado: %.3f) - %s", sim, titulo)
-        return True, "relevancia_contextual", sim, "vetor_isolado"
+        return True, "relevancia_contextual", sim, "inclusao_semantica_vetor_isolado"
 
     # Ajuste no log de "quase aceito" para não poluir o terminal
     if sim >= 0.68:
         logging.info("QUASE_ACEITO (%.3f | sinais=%d) - %s", sim, n_sinais, titulo)
 
-    return False, None, sim, "rejeitado_semantico"
+    return False, None, sim, "exclusao_semantica_insuficiente"
 
 
 
@@ -579,6 +636,7 @@ def preparar_banco(conn) -> None:
             score_relevancia DOUBLE PRECISION,
             classificacao    TEXT,
             criterio_filtro  TEXT,
+            versao_criterio_filtro TEXT,
             url_fonte        TEXT,
             resumo           TEXT,
             texto_completo   TEXT,
@@ -612,6 +670,7 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_publicacao TIMESTAMPTZ",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS categoria_publica TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS eixos_analiticos TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS enquadramentos TEXT",
@@ -625,6 +684,20 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS falso_positivo BOOLEAN DEFAULT FALSE",
     ]:
         cursor.execute(cmd)
+
+    cursor.execute("""
+        UPDATE noticias
+        SET data_referencia = COALESCE(data_publicacao, data_coleta),
+            origem_data_referencia = CASE
+                WHEN data_publicacao IS NOT NULL THEN 'publicacao'
+                WHEN data_coleta IS NOT NULL THEN 'coleta'
+                ELSE 'indefinida'
+            END
+        WHERE data_referencia IS NULL
+           OR origem_data_referencia IS NULL
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_criterio_filtro ON noticias (criterio_filtro)")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pipeline_execucoes (
@@ -676,8 +749,6 @@ def preparar_banco(conn) -> None:
     cursor.execute("ALTER TABLE pipeline_fontes ADD COLUMN IF NOT EXISTS diagnostico_fonte TEXT")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_execucoes_inicio ON pipeline_execucoes (inicio DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_fontes_execucao ON pipeline_fontes (execucao_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_origem_data_referencia ON noticias (origem_data_referencia)")
     conn.commit()
 
 
@@ -799,6 +870,67 @@ def salvar_relatorio_csv(resumos: list[dict], totais: dict) -> Path:
 
 
 
+
+def migrar_criterios_filtro_v2(conn, limite: int = 100000) -> int:
+    """
+    Padroniza criterios legados em noticias.criterio_filtro para a taxonomia v2.
+
+    A migração é idempotente:
+    - registros com critérios antigos são convertidos;
+    - registros já em v2 apenas recebem versao_criterio_filtro, se necessário;
+    - critérios desconhecidos são preservados.
+    """
+    valores_novos = sorted(CRITERIOS_FILTRO_V2)
+    atualizados = 0
+
+    with conn.cursor() as cursor:
+        # 1) Converte critérios legados conhecidos.
+        for antigo, novo in MAPA_CRITERIOS_FILTRO_V2.items():
+            cursor.execute(
+                """
+                UPDATE noticias
+                SET criterio_filtro = %s,
+                    versao_criterio_filtro = %s
+                WHERE criterio_filtro = %s
+                  AND (versao_criterio_filtro IS DISTINCT FROM %s OR criterio_filtro IS DISTINCT FROM %s)
+                  AND id IN (
+                      SELECT id
+                      FROM noticias
+                      WHERE criterio_filtro = %s
+                      LIMIT %s
+                  )
+                """,
+                (
+                    novo,
+                    VERSAO_CRITERIO_FILTRO_ATUAL,
+                    antigo,
+                    VERSAO_CRITERIO_FILTRO_ATUAL,
+                    novo,
+                    antigo,
+                    int(limite),
+                ),
+            )
+            atualizados += cursor.rowcount
+
+        # 2) Marca versão nos registros que já usam a taxonomia v2.
+        if valores_novos:
+            cursor.execute(
+                """
+                UPDATE noticias
+                SET versao_criterio_filtro = %s
+                WHERE criterio_filtro = ANY(%s)
+                  AND versao_criterio_filtro IS DISTINCT FROM %s
+                """,
+                (VERSAO_CRITERIO_FILTRO_ATUAL, valores_novos, VERSAO_CRITERIO_FILTRO_ATUAL),
+            )
+            atualizados += cursor.rowcount
+
+    conn.commit()
+    logging.info("MIGRACAO_CRITERIOS_FILTRO_V2: %s registros atualizados", atualizados)
+    return atualizados
+
+
+
 def registrar_inicio_execucao(conn) -> int:
     """Registra o início de uma execução do pipeline no Supabase."""
     with conn.cursor() as cursor:
@@ -911,8 +1043,7 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, titulo, fonte, data_coleta, url_fonte, resumo, texto_completo,
-               data_publicacao, data_referencia, origem_data_referencia,
-               COALESCE(caso_manual, FALSE) AS caso_manual
+               data_publicacao, COALESCE(caso_manual, FALSE) AS caso_manual
         FROM noticias
         WHERE categoria_publica IS NULL
            OR eixos_analiticos IS NULL
@@ -921,6 +1052,7 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
            OR regiao_fonte IS NULL
            OR data_referencia IS NULL
            OR origem_data_referencia IS NULL
+           OR versao_criterio_filtro IS NULL
            OR (
                 COALESCE(caso_manual, FALSE) = FALSE
                 AND (
@@ -937,8 +1069,7 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
     for row in rows:
         (
             noticia_id, titulo, fonte, data_coleta, url_fonte, resumo,
-            texto_completo, data_publicacao_atual, data_referencia_atual,
-            origem_data_referencia_atual, caso_manual
+            texto_completo, data_publicacao_atual, caso_manual
         ) = row
         data_publicacao = data_publicacao_atual
         resumo_local = resumo
@@ -961,13 +1092,13 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
             data_publicacao,
             data_coleta,
         )
-        data_referencia, origem_data_referencia = calcular_data_referencia(data_publicacao, data_coleta)
 
         cursor.execute("""
             UPDATE noticias
             SET data_publicacao = COALESCE(%s, data_publicacao),
-                data_referencia = COALESCE(%s, data_referencia),
-                origem_data_referencia = COALESCE(%s, origem_data_referencia),
+                data_referencia = %s,
+                origem_data_referencia = %s,
+                versao_criterio_filtro = COALESCE(versao_criterio_filtro, %s),
                 resumo = COALESCE(resumo, %s),
                 texto_completo = COALESCE(texto_completo, %s),
                 categoria_publica = %s,
@@ -986,8 +1117,9 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
             WHERE id = %s
         """, (
             data_publicacao,
-            data_referencia,
-            origem_data_referencia,
+            campos["data_referencia"],
+            campos["origem_data_referencia"],
+            VERSAO_CRITERIO_FILTRO_ATUAL,
             resumo_local,
             texto_local,
             campos["categoria_publica"],
@@ -1012,6 +1144,12 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
 def coletar_noticias() -> None:
     conn = psycopg2.connect(DB_URL)
     preparar_banco(conn)
+    if os.getenv("MIGRAR_CRITERIOS_FILTRO", "1").strip() == "1":
+        migrados_criterios = migrar_criterios_filtro_v2(
+            conn,
+            limite=int(os.getenv("MIGRAR_CRITERIOS_LIMITE", "100000")),
+        )
+        print(f"Migração de critérios de filtro v2: {migrados_criterios} registros atualizados.")
     execucao_id = registrar_inicio_execucao(conn)
 
 
@@ -1078,6 +1216,7 @@ def coletar_noticias() -> None:
                     continue
 
                 aceito, classificacao, score, criterio = classificar_titulo(titulo)
+                criterio = normalizar_criterio_filtro(criterio)
                 if not aceito:
                     continue
 
@@ -1093,18 +1232,27 @@ def coletar_noticias() -> None:
                 try:
                     resumo, texto_completo, data_publicacao = extrair_texto_artigo(url)
                     data_hora = datetime.now(fuso_br)
-                    data_referencia, origem_data_referencia = calcular_data_referencia(data_publicacao, data_hora)
                     campos_analiticos = gerar_campos_analiticos(titulo, nome, resumo or "", texto_completo or "", data_publicacao, data_hora)
                     cursor.execute("""
                         INSERT INTO noticias (
                             titulo, fonte, data_coleta, data_publicacao, data_referencia, origem_data_referencia,
-                            score_relevancia, classificacao, criterio_filtro, url_fonte, resumo, texto_completo, categoria_publica,
+                            score_relevancia, classificacao, criterio_filtro, versao_criterio_filtro,
+                            url_fonte, resumo, texto_completo, categoria_publica,
                             eixos_analiticos, enquadramentos, tipo_fonte, regiao_fonte, caso_id, similaridade_caso
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (titulo) DO NOTHING
                         RETURNING id
-                    """, (titulo, nome, data_hora, data_publicacao, data_referencia, origem_data_referencia, score, classificacao, criterio, url, resumo, texto_completo, campos_analiticos["categoria_publica"], campos_analiticos["eixos_analiticos"], campos_analiticos["enquadramentos"], campos_analiticos["tipo_fonte"], campos_analiticos["regiao_fonte"], campos_analiticos["caso_id"], campos_analiticos["similaridade_caso"]))
+                    """, (
+                        titulo, nome, data_hora, data_publicacao,
+                        campos_analiticos["data_referencia"], campos_analiticos["origem_data_referencia"],
+                        score, classificacao, criterio, VERSAO_CRITERIO_FILTRO_ATUAL,
+                        url, resumo, texto_completo,
+                        campos_analiticos["categoria_publica"], campos_analiticos["eixos_analiticos"],
+                        campos_analiticos["enquadramentos"], campos_analiticos["tipo_fonte"],
+                        campos_analiticos["regiao_fonte"], campos_analiticos["caso_id"],
+                        campos_analiticos["similaridade_caso"]
+                    ))
                     row = cursor.fetchone()
                     if row is None:
                         duplicados += 1; totais["duplicados"] += 1

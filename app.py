@@ -58,6 +58,7 @@ def garantir_colunas_curadoria_casos(engine) -> None:
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT"))
         conn.execute(text("""
             UPDATE noticias
             SET data_referencia = COALESCE(data_publicacao, data_coleta),
@@ -1213,7 +1214,7 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
     cols_rep = [
         "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao", "data_referencia", "origem_data_referencia", "url_fonte",
         "categoria_publica", "eixos_preconceito", "eixos_analiticos", "enquadramentos",
-        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro", "score_relevancia",
+        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro", "versao_criterio_filtro", "score_relevancia",
         "similaridade_caso", "agrupamento_caso", "caso_id_original_pipeline", "resumo"
     ]
     cols_rep = [c for c in cols_rep if c in rep.columns]
@@ -1819,6 +1820,9 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
             if "criterio_filtro" in row_topo.index and pd.notna(row_topo["criterio_filtro"]):
                 badges.append(f'<span class="overlay-badge-tecnica">critério: {safe_text(row_topo["criterio_filtro"])}</span>')
 
+            if "versao_criterio_filtro" in row_topo.index and pd.notna(row_topo["versao_criterio_filtro"]):
+                badges.append(f'<span class="overlay-badge-tecnica">taxonomia: {safe_text(row_topo["versao_criterio_filtro"])}</span>')
+
             if "score_relevancia" in row_topo.index and pd.notna(row_topo["score_relevancia"]):
                 try:
                     badges.append(f'<span class="overlay-badge-tecnica">score {float(row_topo["score_relevancia"]):.3f}</span>')
@@ -1868,7 +1872,7 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
                     "id", "fonte", "data_publicacao", "data_coleta", "categoria_publica",
                     "eixos_analiticos", "eixos_preconceito", "enquadramentos",
                     "caso_id", "similaridade_caso", "tipo_fonte", "regiao_fonte",
-                    "classificacao", "criterio_filtro", "score_relevancia",
+                    "classificacao", "criterio_filtro", "versao_criterio_filtro", "score_relevancia",
                     "url_fonte", "resumo"
                 ]
                 meta = {}
