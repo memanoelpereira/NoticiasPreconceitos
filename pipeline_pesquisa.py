@@ -57,7 +57,9 @@ from regras_dicionarios import (
     GATILHOS_FORTES, GRUPOS_SOCIAIS, CONTEXTOS_SENSIVEIS, VERBOS_CONFLITO, EXPRESSOES_ESPECIFICAS,
     TEMAS_POPULARES, MARCADORES_SOCIAIS_POPULARES, TEMAS_POPULARES_SENSIVEIS, MARCADORES_POPULARES_ESTRITOS,
     CATEGORIAS_PUBLICAS, ENQUADRAMENTOS_DISCURSIVOS, FONTE_TIPO_REGRAS, REGIAO_FONTE_REGRAS,
-    STOPWORDS_CASO
+    STOPWORDS_CASO,
+    VERSAO_CLASSIFICACAO_ANALITICA_ATUAL, CATEGORIAS_PUBLICAS_V2,
+    ENQUADRAMENTOS_DISCURSIVOS_V2, PESOS_CLASSIFICACAO_V2, FAMILIAS_CATEGORIAS_V2
 )
 import unicodedata
 
@@ -234,6 +236,116 @@ def estimar_similaridade_caso(titulo: str, resumo: str = "") -> float:
     n = len(extrair_palavras_chave_caso(titulo, resumo, limite=12))
     return round(min(1.0, max(0.35, n / 10.0)), 3)
 
+
+
+# ============================================================
+# Reclassificação analítica v2 baseada em regras_dicionarios.py
+# ============================================================
+
+def _contem_termo_normalizado(texto_norm: str, termo_norm: str) -> bool:
+    termo_norm = normalizar_texto(termo_norm or "").strip()
+    if not texto_norm or not termo_norm:
+        return False
+    if len(termo_norm) <= 3:
+        return re.search(rf"\b{re.escape(termo_norm)}\b", texto_norm) is not None
+    return termo_norm in texto_norm
+
+
+def _pontuar_categoria_v2(titulo: str, resumo: str, texto_completo: str, categoria: str, blocos: dict) -> dict:
+    campos = [
+        ("titulo", normalizar_texto(titulo or "")),
+        ("resumo", normalizar_texto(resumo or "")),
+        ("texto_completo", normalizar_texto(texto_completo or "")),
+    ]
+    score = 0.0
+    evidencias = []
+    pesos = PESOS_CLASSIFICACAO_V2
+
+    for tipo_evidencia, termos in (blocos or {}).items():
+        if not isinstance(termos, list):
+            continue
+        if tipo_evidencia not in pesos and tipo_evidencia != "termos_amplos":
+            continue
+        peso_tipo = pesos.get("termo_amplo" if tipo_evidencia == "termos_amplos" else tipo_evidencia, 1.0)
+        for termo in list(dict.fromkeys(str(t) for t in termos if str(t).strip())):
+            termo_norm = normalizar_texto(termo)
+            for nome_campo, texto_norm in campos:
+                if _contem_termo_normalizado(texto_norm, termo_norm):
+                    peso_campo = pesos.get(nome_campo, 1.0)
+                    incremento = float(peso_tipo) * float(peso_campo)
+                    score += incremento
+                    evidencias.append(f"{tipo_evidencia}:{termo_norm}@{nome_campo}+{incremento:.2f}")
+                    break
+
+    return {
+        "categoria": categoria,
+        "familia": FAMILIAS_CATEGORIAS_V2.get(categoria, "Não definida"),
+        "score": round(score, 3),
+        "evidencias": evidencias[:18],
+    }
+
+
+def classificar_analiticamente_v2(titulo: str = "", resumo: str = "", texto_completo: str = "") -> dict:
+    pontuacoes = []
+    for categoria, blocos in CATEGORIAS_PUBLICAS_V2.items():
+        item = _pontuar_categoria_v2(titulo, resumo, texto_completo, categoria, blocos)
+        if item["score"] > 0:
+            pontuacoes.append(item)
+
+    if not pontuacoes:
+        fallback_cat = classificar_categoria_publica(titulo, resumo, texto_completo)
+        return {
+            "categoria_publica_v2": fallback_cat or "Estigma, exclusao e conflitos sociais",
+            "familia_categoria_v2": FAMILIAS_CATEGORIAS_V2.get(fallback_cat, "Categoria residual"),
+            "eixos_analiticos_v2": fallback_cat or "Estigma, exclusao e conflitos sociais",
+            "enquadramentos_v2": "Enquadramento indeterminado",
+            "score_categoria_v2": 0.0,
+            "evidencias_classificacao_v2": "sem_evidencias_v2",
+            "versao_classificacao_analitica": VERSAO_CLASSIFICACAO_ANALITICA_ATUAL,
+        }
+
+    pontuacoes = sorted(pontuacoes, key=lambda x: x["score"], reverse=True)
+    top = pontuacoes[0]
+    limiar = max(3.0, float(top["score"]) * 0.35)
+    selecionadas = [p for p in pontuacoes if float(p["score"]) >= limiar][:6]
+
+    # Enquadramentos v2: mais simples, mas usando a mesma lógica de campo ponderado.
+    pont_enq = []
+    campos = [("titulo", normalizar_texto(titulo or "")), ("resumo", normalizar_texto(resumo or "")), ("texto_completo", normalizar_texto(texto_completo or ""))]
+    for nome, dados in ENQUADRAMENTOS_DISCURSIVOS_V2.items():
+        sc = 0.0
+        ev = []
+        for termo in dados.get("termos", []):
+            termo_norm = normalizar_texto(termo)
+            for campo, txt in campos:
+                if _contem_termo_normalizado(txt, termo_norm):
+                    inc = PESOS_CLASSIFICACAO_V2.get(campo, 1.0)
+                    sc += inc
+                    ev.append(f"{termo_norm}@{campo}")
+                    break
+        if sc > 0:
+            pont_enq.append((nome, sc, ev[:8]))
+    pont_enq = sorted(pont_enq, key=lambda x: x[1], reverse=True)
+    enquadramentos = "; ".join(x[0] for x in pont_enq[:6]) if pont_enq else "Enquadramento indeterminado"
+
+    evidencias_cat = " | ".join(
+        f"{p['categoria']}({p['score']}): {', '.join(p['evidencias'][:8])}"
+        for p in selecionadas
+    )
+    evidencias_enq = " | ".join(
+        f"{nome}({round(sc,3)}): {', '.join(ev[:6])}"
+        for nome, sc, ev in pont_enq[:6]
+    ) or "sem_enquadramento_v2"
+
+    return {
+        "categoria_publica_v2": top["categoria"],
+        "familia_categoria_v2": top["familia"],
+        "eixos_analiticos_v2": "; ".join(p["categoria"] for p in selecionadas),
+        "enquadramentos_v2": enquadramentos,
+        "score_categoria_v2": float(top["score"]),
+        "evidencias_classificacao_v2": f"Categorias: {evidencias_cat} || Enquadramentos: {evidencias_enq}",
+        "versao_classificacao_analitica": VERSAO_CLASSIFICACAO_ANALITICA_ATUAL,
+    }
 
 # ============================================================
 # Agrupamento real por CASO no pipeline
@@ -422,10 +534,18 @@ def extrair_data_publicacao_soup(soup: BeautifulSoup) -> Optional[datetime]:
 def gerar_campos_analiticos(titulo: str, fonte: str, resumo: str = "", texto_completo: str = "", data_publicacao: Optional[datetime] = None, data_coleta: Optional[datetime] = None) -> dict:
     categoria = classificar_categoria_publica(titulo, resumo, texto_completo)
     data_ref, origem_data_ref = calcular_data_referencia(data_publicacao, data_coleta)
+    v2 = classificar_analiticamente_v2(titulo, resumo, texto_completo)
     return {
         "categoria_publica": categoria,
         "eixos_analiticos": classificar_eixos_analiticos(titulo, resumo, texto_completo),
         "enquadramentos": classificar_enquadramentos(titulo, resumo, texto_completo),
+        "categoria_publica_v2": v2["categoria_publica_v2"],
+        "familia_categoria_v2": v2["familia_categoria_v2"],
+        "eixos_analiticos_v2": v2["eixos_analiticos_v2"],
+        "enquadramentos_v2": v2["enquadramentos_v2"],
+        "score_categoria_v2": v2["score_categoria_v2"],
+        "evidencias_classificacao_v2": v2["evidencias_classificacao_v2"],
+        "versao_classificacao_analitica": v2["versao_classificacao_analitica"],
         "tipo_fonte": inferir_tipo_fonte(fonte),
         "regiao_fonte": inferir_regiao_fonte(fonte),
         "caso_id": criar_caso_id(titulo, categoria, data_ref, resumo),
@@ -643,6 +763,13 @@ def preparar_banco(conn) -> None:
             categoria_publica TEXT,
             eixos_analiticos TEXT,
             enquadramentos   TEXT,
+            categoria_publica_v2 TEXT,
+            familia_categoria_v2 TEXT,
+            eixos_analiticos_v2 TEXT,
+            enquadramentos_v2 TEXT,
+            score_categoria_v2 DOUBLE PRECISION,
+            evidencias_classificacao_v2 TEXT,
+            versao_classificacao_analitica TEXT,
             tipo_fonte       TEXT,
             regiao_fonte     TEXT,
             caso_id          TEXT,
@@ -674,6 +801,13 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS categoria_publica TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS eixos_analiticos TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS enquadramentos TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS categoria_publica_v2 TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS familia_categoria_v2 TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS eixos_analiticos_v2 TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS enquadramentos_v2 TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS score_categoria_v2 DOUBLE PRECISION",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS evidencias_classificacao_v2 TEXT",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_classificacao_analitica TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS tipo_fonte TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS regiao_fonte TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_id TEXT",
@@ -698,6 +832,8 @@ def preparar_banco(conn) -> None:
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_criterio_filtro ON noticias (criterio_filtro)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_categoria_publica_v2 ON noticias (categoria_publica_v2)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_noticias_familia_categoria_v2 ON noticias (familia_categoria_v2)")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pipeline_execucoes (
@@ -1053,6 +1189,13 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
            OR data_referencia IS NULL
            OR origem_data_referencia IS NULL
            OR versao_criterio_filtro IS NULL
+           OR categoria_publica_v2 IS NULL
+           OR familia_categoria_v2 IS NULL
+           OR eixos_analiticos_v2 IS NULL
+           OR enquadramentos_v2 IS NULL
+           OR score_categoria_v2 IS NULL
+           OR evidencias_classificacao_v2 IS NULL
+           OR versao_classificacao_analitica IS DISTINCT FROM %s
            OR (
                 COALESCE(caso_manual, FALSE) = FALSE
                 AND (
@@ -1063,7 +1206,7 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
            OR (%s = TRUE AND data_publicacao IS NULL AND url_fonte IS NOT NULL)
         ORDER BY id DESC
         LIMIT %s
-    """, (preencher_data_publicacao, limite))
+    """, (VERSAO_CLASSIFICACAO_ANALITICA_ATUAL, preencher_data_publicacao, limite))
     rows = cursor.fetchall()
     atualizados = 0
     for row in rows:
@@ -1104,6 +1247,13 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
                 categoria_publica = %s,
                 eixos_analiticos = %s,
                 enquadramentos = %s,
+                categoria_publica_v2 = %s,
+                familia_categoria_v2 = %s,
+                eixos_analiticos_v2 = %s,
+                enquadramentos_v2 = %s,
+                score_categoria_v2 = %s,
+                evidencias_classificacao_v2 = %s,
+                versao_classificacao_analitica = %s,
                 tipo_fonte = %s,
                 regiao_fonte = %s,
                 caso_id = CASE
@@ -1125,6 +1275,13 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
             campos["categoria_publica"],
             campos["eixos_analiticos"],
             campos["enquadramentos"],
+            campos["categoria_publica_v2"],
+            campos["familia_categoria_v2"],
+            campos["eixos_analiticos_v2"],
+            campos["enquadramentos_v2"],
+            campos["score_categoria_v2"],
+            campos["evidencias_classificacao_v2"],
+            campos["versao_classificacao_analitica"],
             campos["tipo_fonte"],
             campos["regiao_fonte"],
             campos["caso_id"],
@@ -1238,9 +1395,12 @@ def coletar_noticias() -> None:
                             titulo, fonte, data_coleta, data_publicacao, data_referencia, origem_data_referencia,
                             score_relevancia, classificacao, criterio_filtro, versao_criterio_filtro,
                             url_fonte, resumo, texto_completo, categoria_publica,
-                            eixos_analiticos, enquadramentos, tipo_fonte, regiao_fonte, caso_id, similaridade_caso
+                            eixos_analiticos, enquadramentos,
+                            categoria_publica_v2, familia_categoria_v2, eixos_analiticos_v2, enquadramentos_v2,
+                            score_categoria_v2, evidencias_classificacao_v2, versao_classificacao_analitica,
+                            tipo_fonte, regiao_fonte, caso_id, similaridade_caso
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (titulo) DO NOTHING
                         RETURNING id
                     """, (
@@ -1249,9 +1409,13 @@ def coletar_noticias() -> None:
                         score, classificacao, criterio, VERSAO_CRITERIO_FILTRO_ATUAL,
                         url, resumo, texto_completo,
                         campos_analiticos["categoria_publica"], campos_analiticos["eixos_analiticos"],
-                        campos_analiticos["enquadramentos"], campos_analiticos["tipo_fonte"],
-                        campos_analiticos["regiao_fonte"], campos_analiticos["caso_id"],
-                        campos_analiticos["similaridade_caso"]
+                        campos_analiticos["enquadramentos"],
+                        campos_analiticos["categoria_publica_v2"], campos_analiticos["familia_categoria_v2"],
+                        campos_analiticos["eixos_analiticos_v2"], campos_analiticos["enquadramentos_v2"],
+                        campos_analiticos["score_categoria_v2"], campos_analiticos["evidencias_classificacao_v2"],
+                        campos_analiticos["versao_classificacao_analitica"],
+                        campos_analiticos["tipo_fonte"], campos_analiticos["regiao_fonte"],
+                        campos_analiticos["caso_id"], campos_analiticos["similaridade_caso"]
                     ))
                     row = cursor.fetchone()
                     if row is None:

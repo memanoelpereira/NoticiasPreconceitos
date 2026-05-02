@@ -59,6 +59,13 @@ def garantir_colunas_curadoria_casos(engine) -> None:
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS categoria_publica_v2 TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS familia_categoria_v2 TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS eixos_analiticos_v2 TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS enquadramentos_v2 TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS score_categoria_v2 DOUBLE PRECISION"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS evidencias_classificacao_v2 TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_classificacao_analitica TEXT"))
         conn.execute(text("""
             UPDATE noticias
             SET data_referencia = COALESCE(data_publicacao, data_coleta),
@@ -71,6 +78,8 @@ def garantir_colunas_curadoria_casos(engine) -> None:
                OR origem_data_referencia IS NULL
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_categoria_publica_v2 ON noticias (categoria_publica_v2)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_familia_categoria_v2 ON noticias (familia_categoria_v2)"))
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
@@ -558,6 +567,120 @@ def renderizar_gestao_fontes() -> None:
                 st.dataframe(fontes_ruido[colunas_base], use_container_width=True, hide_index=True)
         with t5:
             st.dataframe(df_ag.sort_values(["fonte"])[colunas_base], use_container_width=True, hide_index=True)
+
+
+def renderizar_auditoria_reclassificacao_v2() -> None:
+    """Painel comparativo da classificação analítica v1 × v2. Deve rodar apenas na área protegida."""
+    with st.expander("🧪 Auditoria da reclassificação analítica v2", expanded=True):
+        garantir_colunas_curadoria_casos(get_engine())
+
+        col_a, col_b, col_c = st.columns([1, 1, 2])
+        with col_a:
+            limite_v2 = st.selectbox(
+                "Limite",
+                [50, 100, 200, 500, 1000, 2000],
+                index=2,
+                key="auditoria_reclass_v2_limite"
+            )
+        with col_b:
+            apenas_divergentes = st.checkbox(
+                "Apenas divergências",
+                value=True,
+                key="auditoria_reclass_v2_divergencias"
+            )
+        with col_c:
+            termo_v2 = st.text_input(
+                "Buscar na auditoria",
+                key="auditoria_reclass_v2_busca"
+            )
+
+        filtros = ["COALESCE(falso_positivo, FALSE) = FALSE"]
+        params = {"limite": int(limite_v2)}
+        if apenas_divergentes:
+            filtros.append("""
+                (
+                    COALESCE(categoria_publica, '') <> COALESCE(categoria_publica_v2, '')
+                 OR COALESCE(eixos_analiticos, '') <> COALESCE(eixos_analiticos_v2, '')
+                 OR COALESCE(enquadramentos, '') <> COALESCE(enquadramentos_v2, '')
+                )
+            """)
+        if termo_v2.strip():
+            filtros.append("""
+                (
+                    titulo ILIKE :termo OR fonte ILIKE :termo
+                 OR categoria_publica ILIKE :termo OR categoria_publica_v2 ILIKE :termo
+                 OR familia_categoria_v2 ILIKE :termo
+                )
+            """)
+            params["termo"] = f"%{termo_v2.strip()}%"
+        where_sql = " AND ".join(filtros)
+
+        try:
+            with get_engine().connect() as conn:
+                df_resumo = pd.read_sql(text("""
+                    SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE categoria_publica_v2 IS NOT NULL) AS com_v2,
+                        COUNT(*) FILTER (WHERE COALESCE(categoria_publica, '') <> COALESCE(categoria_publica_v2, '')) AS diverg_categoria,
+                        COUNT(*) FILTER (WHERE COALESCE(enquadramentos, '') <> COALESCE(enquadramentos_v2, '')) AS diverg_enquadramento,
+                        COUNT(DISTINCT categoria_publica_v2) AS n_categorias_v2,
+                        COUNT(DISTINCT familia_categoria_v2) AS n_familias_v2
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                """), conn)
+                df_familias = pd.read_sql(text("""
+                    SELECT COALESCE(familia_categoria_v2, 'Não classificado') AS familia_categoria_v2,
+                           COUNT(*) AS n
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                    GROUP BY 1
+                    ORDER BY n DESC
+                """), conn)
+                df_comp = pd.read_sql(text(f"""
+                    SELECT id, data_referencia, fonte, titulo,
+                           categoria_publica, categoria_publica_v2, familia_categoria_v2,
+                           eixos_analiticos, eixos_analiticos_v2,
+                           enquadramentos, enquadramentos_v2,
+                           score_categoria_v2, evidencias_classificacao_v2,
+                           versao_classificacao_analitica
+                    FROM noticias
+                    WHERE {where_sql}
+                    ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                    LIMIT :limite
+                """), conn, params=params)
+        except Exception as e:
+            st.error(f"Erro ao carregar auditoria da reclassificação v2: {e}")
+            return
+
+        if not df_resumo.empty:
+            r = df_resumo.iloc[0]
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("Registros ativos", int(r.get("total", 0) or 0))
+            k2.metric("Com v2", int(r.get("com_v2", 0) or 0))
+            k3.metric("Diverg. categoria", int(r.get("diverg_categoria", 0) or 0))
+            k4.metric("Diverg. enquadr.", int(r.get("diverg_enquadramento", 0) or 0))
+            k5.metric("Categorias v2", int(r.get("n_categorias_v2", 0) or 0))
+            k6.metric("Famílias v2", int(r.get("n_familias_v2", 0) or 0))
+
+        st.caption(
+            "A classificação v2 é comparativa: ela não substitui automaticamente os campos principais. "
+            "Use esta auditoria para avaliar divergências antes de promover a nova classificação."
+        )
+
+        tab_comp, tab_fam = st.tabs(["Comparação registro a registro", "Distribuição por família v2"])
+        with tab_comp:
+            if df_comp.empty:
+                st.info("Nenhum registro encontrado para os critérios escolhidos.")
+            else:
+                st.dataframe(df_comp, use_container_width=True, hide_index=True)
+        with tab_fam:
+            if df_familias.empty:
+                st.info("Ainda não há famílias v2 preenchidas.")
+            else:
+                fig = px.bar(df_familias, x="n", y="familia_categoria_v2", orientation="h")
+                fig.update_layout(yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(fig, use_container_width=True, key="plot_familias_categoria_v2")
+                st.dataframe(df_familias, use_container_width=True, hide_index=True)
 
 
 def safe_text(value) -> str:
@@ -3188,13 +3311,16 @@ with st.expander("🔐 Domínio de auditoria operacional", expanded=False):
 
     if senha_auditoria == senha_correta_auditoria:
         st.success("Acesso liberado ao domínio de auditoria.")
-        tab_saude, tab_fontes = st.tabs([
+        tab_saude, tab_fontes, tab_reclass = st.tabs([
             "🩺 Saúde da coleta",
             "🗂️ Gestão das fontes",
+            "🧪 Reclassificação v2",
         ])
         with tab_saude:
             renderizar_saude_coleta()
         with tab_fontes:
             renderizar_gestao_fontes()
+        with tab_reclass:
+            renderizar_auditoria_reclassificacao_v2()
     else:
         st.info("Insira a senha de administrador para visualizar os painéis de auditoria.")
