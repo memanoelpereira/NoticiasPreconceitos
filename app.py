@@ -47,49 +47,91 @@ def get_engine():
     )
 
 
-def garantir_colunas_curadoria_casos(engine) -> None:
+COLUNAS_SCHEMA_MINIMO_NOTICIAS = {
+    "id", "titulo", "fonte", "data_coleta", "data_publicacao",
+    "data_referencia", "origem_data_referencia",
+    "score_relevancia", "classificacao", "criterio_filtro",
+    "versao_criterio_filtro", "url_fonte", "resumo", "texto_completo",
+    "categoria_publica", "eixos_analiticos", "enquadramentos",
+    "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
+    "enquadramentos_v2", "score_categoria_v2",
+    "evidencias_classificacao_v2", "versao_classificacao_analitica",
+    "tipo_fonte", "regiao_fonte", "caso_id", "similaridade_caso",
+    "origem_agrupamento_caso", "caso_manual", "data_curadoria_caso",
+    "observacao_curadoria_caso", "falso_positivo",
+}
+
+
+def garantir_colunas_curadoria_casos(engine) -> bool:
     """
-    Garante as colunas usadas pela curadoria manual de casos.
-    A função é idempotente: pode ser chamada várias vezes sem alterar dados existentes.
+    Checagem leve de schema, sem DDL no Streamlit.
+
+    As migrações de banco devem ser executadas fora do app, pelo script
+    `scripts_migrar_schema_supabase.py` ou pelo SQL Editor do Supabase.
+    Esta função fica com o mesmo nome para preservar chamadas existentes,
+    mas não executa ALTER TABLE nem CREATE INDEX.
     """
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_agrupamento_caso TEXT"))
-        conn.execute(text("""
-            UPDATE noticias
-            SET data_referencia = COALESCE(data_publicacao, data_coleta),
-                origem_data_referencia = CASE
-                    WHEN data_publicacao IS NOT NULL THEN 'publicacao'
-                    WHEN data_coleta IS NOT NULL THEN 'coleta'
-                    ELSE 'indefinida'
-                END
-            WHERE data_referencia IS NULL
-               OR origem_data_referencia IS NULL
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)"))
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'noticias'
+            """)).fetchall()
+        existentes = {str(r[0]) for r in rows}
+        faltantes = sorted(COLUNAS_SCHEMA_MINIMO_NOTICIAS - existentes)
+        if faltantes:
+            st.warning(
+                "O schema do Supabase ainda não tem todas as colunas esperadas. "
+                "Execute o script de migração antes de usar a curadoria. "
+                f"Colunas ausentes: {', '.join(faltantes[:12])}"
+                + ("..." if len(faltantes) > 12 else "")
+            )
+            return False
+        return True
+    except Exception as e:
+        st.info(f"Não foi possível checar o schema do banco neste momento: {e}")
+        return False
+
+
+# Consulta principal leve: evita carregar `texto_completo` e evidências longas
+# em memória a cada rerun do Streamlit. Esses campos são buscados sob demanda
+# por `carregar_detalhe_noticia()`.
+NOTICIAS_COLUNAS_LEVES = [
+    "id", "titulo", "fonte", "data_coleta", "data_publicacao",
+    "data_referencia", "origem_data_referencia",
+    "score_relevancia", "classificacao", "criterio_filtro",
+    "versao_criterio_filtro", "url_fonte", "resumo",
+    "categoria_publica", "eixos_analiticos", "enquadramentos",
+    "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
+    "enquadramentos_v2", "score_categoria_v2", "versao_classificacao_analitica",
+    "tipo_fonte", "regiao_fonte", "caso_id", "similaridade_caso",
+    "origem_agrupamento_caso", "caso_manual", "data_curadoria_caso",
+    "observacao_curadoria_caso", "falso_positivo",
+]
+
+NOTICIAS_SELECT_LEVE = ",\n                        ".join(NOTICIAS_COLUNAS_LEVES)
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
     if periodo_sql == "tudo":
-        query = text("""
-                     SELECT *
+        query = text(f"""
+                     SELECT {NOTICIAS_SELECT_LEVE}
                      FROM noticias
-                     WHERE falso_positivo = FALSE
-                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
+                     WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                     LIMIT :limite
                      """)
         params = {"limite": int(limite)}
     else:
-        query = text("""
-                     SELECT *
+        query = text(f"""
+                     SELECT {NOTICIAS_SELECT_LEVE}
                      FROM noticias
                      WHERE COALESCE(data_referencia, data_publicacao, data_coleta) >= NOW() - CAST(:intervalo AS INTERVAL)
-                       AND falso_positivo = FALSE
-                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
+                       AND COALESCE(falso_positivo, FALSE) = FALSE
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                     LIMIT :limite
                      """)
         params = {
             "limite": int(limite),
@@ -129,6 +171,36 @@ def carregar_dados(periodo_sql: str, limite: int):
         return pd.DataFrame(), pd.DataFrame(), 0, str(e)
 
 
+@st.cache_data(ttl=300)
+def carregar_detalhe_noticia(noticia_id: int):
+    """
+    Carrega campos pesados apenas quando uma notícia é aberta.
+    Isso reduz o consumo de memória da consulta principal.
+    """
+    if noticia_id is None:
+        return pd.DataFrame(), "ID não informado."
+    try:
+        with get_engine().connect() as conn:
+            df = pd.read_sql(
+                text("""
+                    SELECT
+                        id, resumo, texto_completo, url_fonte,
+                        evidencias_classificacao_v2,
+                        categoria_publica_v2, familia_categoria_v2,
+                        eixos_analiticos_v2, enquadramentos_v2,
+                        score_categoria_v2, versao_classificacao_analitica
+                    FROM noticias
+                    WHERE id = :id
+                    LIMIT 1
+                """),
+                conn,
+                params={"id": int(noticia_id)},
+            )
+        return df, None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
 
 
 @st.cache_data(ttl=60)
@@ -144,7 +216,16 @@ def carregar_saude_pipeline():
         with get_engine().connect() as conn:
             df_exec = pd.read_sql(
                 text("""
-                    SELECT *
+                    SELECT
+                        id, inicio, fim, status, duracao_seg,
+                        portais_total, portais_ok, portais_erro,
+                        extraidos, filtrados, alta_relevancia,
+                        relevancia_contextual, caso_sensivel,
+                        inseridos, duplicados, erros_db,
+                        backfill_atualizados,
+                        reagrupamento_inicio_atualizados,
+                        reagrupamento_final_atualizados,
+                        observacao
                     FROM pipeline_execucoes
                     ORDER BY inicio DESC
                     LIMIT 1
@@ -2003,7 +2084,14 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
         ].copy()
 
     if not selecionada_topo.empty:
-        row_topo = selecionada_topo.iloc[0]
+        row_topo = selecionada_topo.iloc[0].copy()
+
+        detalhe_topo, erro_detalhe_topo = carregar_detalhe_noticia(int(row_topo["id"]))
+        if erro_detalhe_topo:
+            st.caption(f"Texto detalhado não carregado: {erro_detalhe_topo}")
+        elif not detalhe_topo.empty:
+            for col, valor in detalhe_topo.iloc[0].items():
+                row_topo[col] = valor
 
         st.markdown(
             """
