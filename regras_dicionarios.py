@@ -1,7 +1,7 @@
 # regras_dicionarios.py
 
 TERMOS_ALVO_SPACY = [
-    "preconceito", "discriminacao", "estereotipo", "estigma", "desumanizacao", "racismo", "misoginia",
+    "preconceito", "discriminacao", "estereotipo", "preconceito regional", "estereotipo regional", "estigma territorial", "estigma", "desumanizacao", "racismo", "misoginia",
     "homofobia", "transfobia", "xenofobia", "aporofobia", "capacitismo", "antissemitismo", "islamofobia",
     "violencia simbolica", "discurso de odio", "microagressao", "minorias", "desigualdade", "exclusao",
     "intolerancia religiosa", "injuria racial", "humilhacao", "segregacao", "ridicularizacao"
@@ -186,7 +186,17 @@ CATEGORIAS_PUBLICAS = {
     "Xenofobia, migracao e refugio": ["xenofobia", "xenofob", "imigrante", "imigrantes", "migrante", "migrantes", "refugiado", "refugiados", "migracao", "venezuelano", "haitiano", "boliviano"],
     "Povos indigenas, quilombolas e comunidades tradicionais": ["indigena", "indigenas", "povos originarios", "quilombola", "quilombolas", "demarcacao", "terras indigenas", "comunidades tradicionais", "povos tradicionais", "yanomami", "guarani", "kaingang", "tupinamba"],
     "Capacitismo e deficiencia": ["capacitismo", "capacitista", "pessoa com deficiencia", "pcd", "deficiencia", "deficiente", "autista", "autistas", "autismo", "neurodivergente", "acessibilidade"],
-    "Preconceito regional e territorial": ["nordestino", "nordestina", "nordestinos", "ant nordestino", "preconceito regional", "sotaque", "sertanejo", "amazonida", "interiorano", "ribeirinho"],
+    "Estereotipos e preconceito regional e territorial": [
+        "preconceito regional", "preconceito territorial", "estereotipo regional",
+        "estereotipos regionais", "estereotipo territorial", "estereotipos territoriais",
+        "estigma territorial", "discriminacao regional", "discriminacao territorial",
+        "xenofobia contra nordestinos", "preconceito contra nordestinos",
+        "nordestino", "nordestina", "nordestinos", "nordestinas",
+        "sotaque", "sertanejo", "sertaneja", "amazonida", "amazonidas",
+        "amazonia", "amazonico", "amazonica", "belem", "regiao norte",
+        "norte do brasil", "interiorano", "interiorana", "ribeirinho", "ribeirinha",
+        "e so mato", "so mato"
+    ],
     "Classe, pobreza e aporofobia": ["aporofobia", "pobre", "pobres", "morador de rua", "populacao em situacao de rua", "favela", "favelas", "periferia", "periferico", "exclusao social", "desigualdade"],
     "Estigma corporal, aparencia e gordofobia": ["gordofobia", "obesidade", "corpo", "aparencia", "padrao de beleza", "estetica", "humilhacao corporal", "peso", "gordo", "gorda"],
     "Esporte, cultura e lazer com discriminacao": ["futebol", "torcida", "torcedor", "estadio", "jogador", "jogadora", "atleta", "musica", "show", "espetaculo", "teatro", "cinema", "samba", "funk", "rap", "hip hop", "festa popular", "cultura popular", "lazer popular"],
@@ -231,7 +241,7 @@ STOPWORDS_CASO = {"a", "o", "as", "os", "um", "uma", "de", "da", "do", "das", "d
 # aplicada pelo pipeline em colunas comparativas (_v2), permitindo auditoria
 # antes de promover a nova classificação para os campos principais.
 
-VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica"
+VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica_territorial"
 
 PESOS_CLASSIFICACAO_V2 = {
     # Peso do campo em que o termo aparece.
@@ -262,7 +272,7 @@ FAMILIAS_CATEGORIAS_V2 = {
     "LGBTQIA+ e LGBTfobia": "Genero e sexualidade",
     "Capacitismo e deficiencia": "Corpo, funcionalidade e saude social",
     "Estigma corporal, aparencia e gordofobia": "Corpo, funcionalidade e saude social",
-    "Preconceito regional, territorial e periferias": "Territorio, classe e desigualdade",
+    "Estereotipos e preconceito regional e territorial": "Territorio, classe e desigualdade",
     "Classe social, pobreza e aporofobia": "Territorio, classe e desigualdade",
     "Etarismo, infancia, juventude e envelhecimento": "Geracoes e ciclo de vida",
     "Esporte, cultura e lazer com discriminacao": "Cultura, esporte e vida cotidiana",
@@ -475,29 +485,53 @@ CATEGORIAS_PUBLICAS_V2 = {
         "termos_amplos": ["deficiencia", "acessibilidade"],
     },
 
-    "Preconceito regional, territorial e periferias": {
+    "Estereotipos e preconceito regional e territorial": {
         "termos_explicitos": [
-            "preconceito regional", "xenofobia contra nordestinos", "preconceito contra nordestinos",
-            "discriminacao regional", "estigma territorial",
+            "preconceito regional", "preconceito territorial", "discriminacao regional",
+            "discriminacao territorial", "estigma territorial", "estigma regional",
+            "xenofobia contra nordestinos", "preconceito contra nordestinos",
+            "estereotipo regional", "estereotipos regionais",
+            "estereotipo territorial", "estereotipos territoriais",
+            "estereotipos sobre belem", "estereotipo sobre belem",
+            "estereotipos sobre a amazonia", "estereotipo sobre a amazonia",
+            "estereotipos sobre o norte", "estereotipo sobre o norte",
         ],
         "grupos": [
-            "nordestino", "nordestina", "nordestinos", "nordestinas", "sertanejo",
-            "sertaneja", "ribeirinho", "ribeirinha", "amazonida", "periferico",
-            "periferica", "morador de favela", "moradores de favela",
+            "nordestino", "nordestina", "nordestinos", "nordestinas",
+            "sertanejo", "sertaneja", "ribeirinho", "ribeirinha",
+            "amazonida", "amazonidas", "amazônida", "amazônidas",
+            "paraense", "paraenses", "belemense", "belemenses",
+            "morador da amazonia", "moradores da amazonia",
+            "morador do norte", "moradores do norte",
+            "periferico", "periferica", "morador de favela", "moradores de favela",
         ],
         "contextos": [
-            "sotaque", "regiao", "territorio", "periferia", "favela", "comunidade",
-            "moradia", "cidade", "trabalho", "internet", "rede social", "politica",
+            "sotaque", "regiao", "territorio", "interior", "capital", "cidade",
+            "belem", "belém", "amazonia", "amazônia", "amazonico", "amazonica",
+            "regiao norte", "norte do brasil", "para", "pará", "acre", "amapa",
+            "amazonas", "rondonia", "roraima", "tocantins", "periferia", "favela",
+            "comunidade", "moradia", "trabalho", "internet", "rede social", "politica",
         ],
         "conflitos": [
-            "ofensa", "deboche", "ridicularizacao", "humilhacao", "hostilidade",
-            "exclusao", "criminalizacao", "denuncia", "ataque",
+            "ofensa", "deboche", "ridicularizacao", "ridicularização", "humilhacao",
+            "humilhação", "hostilidade", "exclusao", "exclusão", "criminalizacao",
+            "criminalização", "denuncia", "denúncia", "ataque", "rebaixamento",
         ],
         "direitos_politicas": [
             "direito a cidade", "politica territorial", "urbanizacao", "moradia digna",
+            "desenvolvimento regional", "desigualdade regional", "representacao regional",
         ],
-        "expressoes": ["preconceito contra nordestinos", "discriminacao por sotaque", "estigma da favela"],
-        "termos_amplos": ["periferia", "favela", "comunidade"],
+        "expressoes": [
+            "preconceito contra nordestinos", "discriminacao por sotaque", "estigma da favela",
+            "e so mato", "é só mato", "so mato", "só mato",
+            "estereotipos sobre belem", "estereótipos sobre belém",
+            "estereotipos sobre a amazonia", "estereótipos sobre a amazônia",
+            "estereotipos sobre o norte", "estereótipos sobre o norte",
+        ],
+        "termos_amplos": [
+            "periferia", "favela", "comunidade", "amazonia", "amazônia",
+            "belem", "belém", "norte", "territorio", "território",
+        ],
     },
 
     "Classe social, pobreza e aporofobia": {
