@@ -1501,27 +1501,10 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         impacto_ponderado_total=("impacto_ponderado", "sum"),
     )
     cols_rep = [
-        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao",
-        "data_referencia", "origem_data_referencia", "url_fonte",
-
-        # Classificação v1 / campos legados
+        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao", "data_referencia", "origem_data_referencia", "url_fonte",
         "categoria_publica", "eixos_preconceito", "eixos_analiticos", "enquadramentos",
-
-        # Classificação analítica v2
-        "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
-        "enquadramentos_v2", "score_categoria_v2", "versao_classificacao_analitica",
-
-        # Fonte, filtro e relevância
-        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro",
-        "versao_criterio_filtro", "score_relevancia",
-
-        # Agrupamento de casos
-        "similaridade_caso", "origem_agrupamento_caso", "agrupamento_caso",
-        "caso_id_original_pipeline", "caso_manual", "data_curadoria_caso",
-        "observacao_curadoria_caso",
-
-        # Campo textual leve
-        "resumo",
+        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro", "versao_criterio_filtro", "score_relevancia",
+        "similaridade_caso", "agrupamento_caso", "caso_id_original_pipeline", "resumo"
     ]
     cols_rep = [c for c in cols_rep if c in rep.columns]
     rep = rep[cols_rep].rename(columns={
@@ -1534,16 +1517,6 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         "origem_data_referencia": "origem_data_referencia_representativa",
         "url_fonte": "url_representativa",
         "resumo": "resumo_representativo",
-        "categoria_publica_v2": "categoria_publica_v2_representativa",
-        "familia_categoria_v2": "familia_categoria_v2_representativa",
-        "eixos_analiticos_v2": "eixos_analiticos_v2_representativos",
-        "enquadramentos_v2": "enquadramentos_v2_representativos",
-        "score_categoria_v2": "score_categoria_v2_representativo",
-        "versao_classificacao_analitica": "versao_classificacao_analitica_representativa",
-        "origem_agrupamento_caso": "origem_agrupamento_caso_representativa",
-        "caso_manual": "caso_manual_representativo",
-        "data_curadoria_caso": "data_curadoria_caso_representativa",
-        "observacao_curadoria_caso": "observacao_curadoria_caso_representativa",
     })
     casos = agg.merge(rep, on="caso_id", how="left")
     casos["data_referencia_coleta"] = casos["primeira_coleta"]
@@ -2469,31 +2442,32 @@ else:
 
     with st.expander("⬇️ Exportar recorte filtrado", expanded=False):
         st.caption(
-            "Exporta o recorte após filtros de período, busca, categoria, eixo, enquadramento, portal e tipo de fonte, "
-            "antes do limite visual dos cards. A exportação inclui os campos analíticos v2, metadados de agrupamento "
-            "e campos de curadoria quando existirem no banco."
+            "Exportação pública do recorte filtrado. O CSV preserva variáveis úteis para análise "
+            "científica — texto, fonte, datas, classificação substantiva, caso e índices agregados — "
+            "e remove campos técnicos de auditoria, depuração, curadoria interna e versionamento."
         )
 
-        incluir_campos_pesados = st.checkbox(
-            "Incluir campos textuais longos e evidências detalhadas",
+        incluir_texto_completo_publico = st.checkbox(
+            "Incluir texto completo das notícias",
             value=False,
-            key="exportar_campos_pesados_csv",
+            key="exportar_publico_texto_completo_csv",
             help=(
-                "Inclui resumo, texto completo e evidências da classificação v2. "
-                "Pode deixar o CSV maior e a exportação mais lenta."
+                "Inclui a coluna texto_completo no CSV por notícia e o texto completo da notícia "
+                "representativa no CSV por caso. Deixe desmarcado para gerar um CSV público mais leve."
             ),
         )
 
-        def _buscar_campos_pesados_noticias(ids: list[int]) -> pd.DataFrame:
-            """Busca campos longos somente quando o usuário pede a exportação completa."""
+        def _buscar_textos_publicos_noticias(ids: list[int]) -> pd.DataFrame:
+            """Busca resumo e, opcionalmente, texto completo somente para o recorte exportado."""
             ids = [int(x) for x in ids if pd.notna(x)]
             if not ids:
                 return pd.DataFrame()
+            col_texto = ", texto_completo" if incluir_texto_completo_publico else ""
             try:
                 with get_engine().connect() as conn:
                     return pd.read_sql(
-                        text("""
-                            SELECT id, resumo, texto_completo, evidencias_classificacao_v2
+                        text(f"""
+                            SELECT id, resumo{col_texto}
                             FROM noticias
                             WHERE id = ANY(:ids)
                         """),
@@ -2501,126 +2475,271 @@ else:
                         params={"ids": ids},
                     )
             except Exception as e:
-                st.warning(f"Não foi possível carregar campos textuais longos para exportação: {e}")
+                st.warning(f"Não foi possível carregar textos para exportação pública: {e}")
                 return pd.DataFrame()
 
-        colunas_export_noticias = [
+        def _unicos_publicos(series: pd.Series) -> str:
+            valores = []
+            for v in series:
+                if pd.isna(v):
+                    continue
+                s = str(v).strip()
+                if s and s not in valores:
+                    valores.append(s)
+            return "; ".join(valores)
+
+        def _hhi_publico(series: pd.Series) -> float:
+            try:
+                vals = [str(v).strip() for v in series if pd.notna(v) and str(v).strip()]
+                if not vals:
+                    return np.nan
+                contagens = pd.Series(vals).value_counts(normalize=True)
+                return round(float((contagens ** 2).sum()), 4)
+            except Exception:
+                return np.nan
+
+        def _agregar_entidades_publicas(df_ent: pd.DataFrame, ids_validos: list[int]) -> pd.DataFrame:
+            """Agrega entidades extraídas em colunas legíveis para o CSV público."""
+            if df_ent is None or df_ent.empty or not ids_validos:
+                return pd.DataFrame(columns=[
+                    "id", "entidades_pessoas", "entidades_organizacoes",
+                    "entidades_lugares", "entidades_outras"
+                ])
+            ent = df_ent[df_ent["noticia_id"].isin(ids_validos)].copy()
+            if ent.empty:
+                return pd.DataFrame(columns=[
+                    "id", "entidades_pessoas", "entidades_organizacoes",
+                    "entidades_lugares", "entidades_outras"
+                ])
+            ent["tipo"] = ent["tipo"].fillna("").astype(str)
+            ent["texto"] = ent["texto"].fillna("").astype(str)
+
+            def junta_tipo(g: pd.DataFrame, tipo: str) -> str:
+                return _unicos_publicos(g.loc[g["tipo"].eq(tipo), "texto"])
+
+            linhas = []
+            for noticia_id, g in ent.groupby("noticia_id"):
+                outras = g.loc[~g["tipo"].isin(["PER", "ORG", "LOC"]), "texto"]
+                linhas.append({
+                    "id": int(noticia_id),
+                    "entidades_pessoas": junta_tipo(g, "PER"),
+                    "entidades_organizacoes": junta_tipo(g, "ORG"),
+                    "entidades_lugares": junta_tipo(g, "LOC"),
+                    "entidades_outras": _unicos_publicos(outras),
+                })
+            return pd.DataFrame(linhas)
+
+        def _metricas_publicas_por_caso(df_base: pd.DataFrame) -> pd.DataFrame:
+            """Calcula métricas substantivas por caso para anexar ao CSV por notícia e por caso."""
+            if df_base is None or df_base.empty or "caso_id" not in df_base.columns:
+                return pd.DataFrame()
+            base = df_base[df_base["caso_id"].notna()].copy()
+            if base.empty:
+                return pd.DataFrame()
+            if "data_referencia" not in base.columns:
+                base["data_referencia"] = pd.NaT
+            base["_data_ref_tmp"] = pd.to_datetime(base["data_referencia"], errors="coerce")
+            if "impacto" not in base.columns:
+                base["impacto"] = 1
+            if "impacto_ponderado" not in base.columns:
+                base["impacto_ponderado"] = base["impacto"]
+
+            agg = base.groupby("caso_id", as_index=False).agg(
+                n_noticias_caso=("id", "count"),
+                n_fontes_caso=("fonte", lambda x: len(set([str(v).strip() for v in x if pd.notna(v) and str(v).strip()]))),
+                fontes_caso=("fonte", _unicos_publicos),
+                ids_noticias=("id", lambda x: ", ".join(str(int(v)) for v in x if pd.notna(v))),
+                primeira_data_caso=("_data_ref_tmp", "min"),
+                ultima_data_caso=("_data_ref_tmp", "max"),
+                impacto_total_caso=("impacto", "sum"),
+                impacto_ponderado_total_caso=("impacto_ponderado", "sum"),
+            )
+            hhi = base.groupby("caso_id")["fonte"].apply(_hhi_publico).rename("hhi_fontes_caso").reset_index()
+            agg = agg.merge(hhi, on="caso_id", how="left")
+            agg["janela_dias_caso"] = (
+                (agg["ultima_data_caso"] - agg["primeira_data_caso"]).dt.total_seconds() / 86400.0
+            ).round(2)
+            return agg
+
+        def _serie_classificacao_publica(df: pd.DataFrame) -> pd.DataFrame:
+            """Cria nomes públicos para a classificação consolidada v2, com fallback para v1."""
+            out = pd.DataFrame(index=df.index)
+            out["categoria_publica"] = df.get("categoria_publica_v2", df.get("categoria_publica", pd.Series(index=df.index, dtype=object)))
+            if "categoria_publica_v2" in df.columns and "categoria_publica" in df.columns:
+                out["categoria_publica"] = out["categoria_publica"].fillna(df["categoria_publica"])
+
+            out["familia_categoria"] = df.get("familia_categoria_v2", pd.Series(index=df.index, dtype=object))
+
+            out["eixos_analiticos"] = df.get("eixos_analiticos_v2", df.get("eixos_analiticos", pd.Series(index=df.index, dtype=object)))
+            if "eixos_analiticos_v2" in df.columns and "eixos_analiticos" in df.columns:
+                out["eixos_analiticos"] = out["eixos_analiticos"].fillna(df["eixos_analiticos"])
+            if "eixos_preconceito" in df.columns:
+                out["eixos_analiticos"] = out["eixos_analiticos"].fillna(df["eixos_preconceito"])
+
+            out["enquadramentos"] = df.get("enquadramentos_v2", df.get("enquadramentos", pd.Series(index=df.index, dtype=object)))
+            if "enquadramentos_v2" in df.columns and "enquadramentos" in df.columns:
+                out["enquadramentos"] = out["enquadramentos"].fillna(df["enquadramentos"])
+
+            out["score_classificacao"] = df.get("score_categoria_v2", pd.Series(index=df.index, dtype=float))
+            return out
+
+        # -----------------------------
+        # CSV público por notícia
+        # -----------------------------
+        base_noticias = df_noticias_filtrado_sem_limite.copy()
+        ids_export = base_noticias["id"].dropna().astype(int).tolist() if "id" in base_noticias.columns else []
+
+        colunas_base_publicas = [
             c for c in [
-                # Identificação e origem
-                "id", "fonte", "tipo_fonte", "regiao_fonte", "titulo", "url_fonte",
-
-                # Datas
+                "id", "titulo", "url_fonte", "fonte", "tipo_fonte", "regiao_fonte",
                 "data_publicacao", "data_coleta", "data_referencia", "origem_data_referencia",
-
-                # Classificação v1 / legada
-                "categoria_publica", "eixos_analiticos", "eixos_preconceito", "enquadramentos",
-
-                # Classificação v2
-                "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
-                "enquadramentos_v2", "score_categoria_v2", "versao_classificacao_analitica",
-
-                # Filtro e relevância
-                "classificacao", "criterio_filtro", "versao_criterio_filtro",
-                "score_relevancia", "impacto", "impacto_ponderado",
-
-                # Agrupamento e curadoria de casos
-                "caso_id", "caso_id_original_pipeline", "agrupamento_caso", "similaridade_caso",
-                "origem_agrupamento_caso", "caso_manual", "data_curadoria_caso",
-                "observacao_curadoria_caso",
-
-                # Curadoria geral
-                "falso_positivo",
-            ] if c in df_noticias_filtrado_sem_limite.columns
+                "caso_id", "similaridade_caso", "impacto", "impacto_ponderado",
+            ] if c in base_noticias.columns
         ]
-        df_export_noticias = (
-            df_noticias_filtrado_sem_limite[colunas_export_noticias].copy()
-            if colunas_export_noticias else df_noticias_filtrado_sem_limite.copy()
-        )
+        df_export_noticias = base_noticias[colunas_base_publicas].copy()
 
-        if incluir_campos_pesados and "id" in df_export_noticias.columns:
-            df_pesado = _buscar_campos_pesados_noticias(df_export_noticias["id"].dropna().tolist())
-            if not df_pesado.empty:
-                # Evita duplicar colunas se alguma delas já veio na consulta principal.
-                for col in ["resumo", "texto_completo", "evidencias_classificacao_v2"]:
+        # Textos públicos: resumo sempre; texto completo apenas se solicitado.
+        if ids_export:
+            df_textos = _buscar_textos_publicos_noticias(ids_export)
+            if not df_textos.empty:
+                for col in ["resumo", "texto_completo"]:
                     if col in df_export_noticias.columns:
                         df_export_noticias = df_export_noticias.drop(columns=[col])
-                df_export_noticias = df_export_noticias.merge(df_pesado, on="id", how="left")
+                df_export_noticias = df_export_noticias.merge(df_textos, on="id", how="left")
 
-        colunas_export_casos = [
-            c for c in [
-                # Identificação do caso
-                "caso_id", "titulo_representativo", "noticia_representativa_id",
-                "ids_noticias", "n_noticias", "n_fontes", "fontes",
+        # Classificação consolidada com nomes públicos.
+        df_class_publica = _serie_classificacao_publica(base_noticias)
+        df_export_noticias = pd.concat([df_export_noticias.reset_index(drop=True), df_class_publica.reset_index(drop=True)], axis=1)
 
-                # Classificação v1 / legada
-                "categoria_publica", "eixos_analiticos", "eixos_preconceito", "enquadramentos",
+        # Métricas de caso e entidades.
+        df_metricas_caso = _metricas_publicas_por_caso(base_noticias)
+        if not df_metricas_caso.empty and "caso_id" in df_export_noticias.columns:
+            df_export_noticias = df_export_noticias.merge(df_metricas_caso, on="caso_id", how="left")
 
-                # Classificação v2 da notícia representativa
-                "categoria_publica_v2_representativa", "familia_categoria_v2_representativa",
-                "eixos_analiticos_v2_representativos", "enquadramentos_v2_representativos",
-                "score_categoria_v2_representativo", "versao_classificacao_analitica_representativa",
+        df_ent_pub = _agregar_entidades_publicas(df_entidades, ids_export)
+        if not df_ent_pub.empty and "id" in df_export_noticias.columns:
+            df_export_noticias = df_export_noticias.merge(df_ent_pub, on="id", how="left")
 
-                # Fonte representativa e URL
-                "fonte_representativa", "tipo_fonte", "regiao_fonte", "url_representativa",
-
-                # Datas agregadas
-                "data_publicacao_min", "data_publicacao_max", "primeira_coleta", "ultima_coleta",
-                "data_referencia_min", "data_referencia_max", "data_referencia",
-                "data_referencia_representativa", "origem_data_referencia_representativa",
-
-                # Relevância e agrupamento
-                "impacto_total", "impacto_ponderado_total", "similaridade_caso",
-                "origem_agrupamento_caso_representativa", "agrupamento_caso",
-                "caso_id_original_pipeline", "caso_manual_representativo",
-                "data_curadoria_caso_representativa", "observacao_curadoria_caso_representativa",
-
-                # Campo textual leve
-                "resumo_representativo",
-            ] if c in df_casos_filtrado_sem_limite.columns
+        ordem_noticias = [
+            "id", "titulo", "resumo", "texto_completo", "url_fonte", "fonte", "tipo_fonte", "regiao_fonte",
+            "data_publicacao", "data_coleta", "data_referencia", "origem_data_referencia",
+            "categoria_publica", "familia_categoria", "eixos_analiticos", "enquadramentos", "score_classificacao",
+            "caso_id", "similaridade_caso", "n_noticias_caso", "n_fontes_caso", "fontes_caso",
+            "primeira_data_caso", "ultima_data_caso", "janela_dias_caso",
+            "impacto", "impacto_ponderado", "impacto_total_caso", "impacto_ponderado_total_caso", "hhi_fontes_caso",
+            "entidades_pessoas", "entidades_organizacoes", "entidades_lugares", "entidades_outras",
         ]
-        df_export_casos = (
-            df_casos_filtrado_sem_limite[colunas_export_casos].copy()
-            if colunas_export_casos else df_casos_filtrado_sem_limite.copy()
-        )
+        if not incluir_texto_completo_publico and "texto_completo" in df_export_noticias.columns:
+            df_export_noticias = df_export_noticias.drop(columns=["texto_completo"])
+        df_export_noticias = df_export_noticias[[c for c in ordem_noticias if c in df_export_noticias.columns]]
 
-        if incluir_campos_pesados and "noticia_representativa_id" in df_export_casos.columns:
-            ids_rep = df_export_casos["noticia_representativa_id"].dropna().tolist()
-            df_pesado_rep = _buscar_campos_pesados_noticias(ids_rep)
-            if not df_pesado_rep.empty:
-                df_pesado_rep = df_pesado_rep.rename(columns={
+        # -----------------------------
+        # CSV público por caso
+        # -----------------------------
+        if not base_noticias.empty and "caso_id" in base_noticias.columns:
+            base_rep = base_noticias.copy()
+            if "impacto" not in base_rep.columns:
+                base_rep["impacto"] = 1
+            if "data_referencia" not in base_rep.columns:
+                base_rep["data_referencia"] = pd.NaT
+            base_rep["_data_ref_tmp"] = pd.to_datetime(base_rep["data_referencia"], errors="coerce")
+            base_rep = base_rep.sort_values(["caso_id", "impacto", "_data_ref_tmp"], ascending=[True, False, False])
+            rep = base_rep.groupby("caso_id", as_index=False).first()
+
+            df_export_casos = df_metricas_caso.copy() if not df_metricas_caso.empty else pd.DataFrame()
+            if not df_export_casos.empty:
+                rep_cols = [c for c in [
+                    "caso_id", "id", "titulo", "url_fonte", "fonte", "tipo_fonte", "regiao_fonte",
+                    "data_publicacao", "data_coleta", "data_referencia", "origem_data_referencia",
+                    "similaridade_caso",
+                ] if c in rep.columns]
+                rep_publica = rep[rep_cols].copy().rename(columns={
                     "id": "noticia_representativa_id",
-                    "resumo": "resumo_representativo_completo",
-                    "texto_completo": "texto_completo_representativo",
-                    "evidencias_classificacao_v2": "evidencias_classificacao_v2_representativa",
+                    "titulo": "titulo_representativo",
+                    "url_fonte": "url_representativa",
+                    "fonte": "fonte_representativa",
+                    "data_publicacao": "data_publicacao_representativa",
+                    "data_coleta": "data_coleta_representativa",
+                    "data_referencia": "data_referencia_representativa",
+                    "origem_data_referencia": "origem_data_referencia_representativa",
+                    "similaridade_caso": "similaridade_caso_representativa",
                 })
-                for col in [
-                    "resumo_representativo_completo",
-                    "texto_completo_representativo",
-                    "evidencias_classificacao_v2_representativa",
-                ]:
-                    if col in df_export_casos.columns:
-                        df_export_casos = df_export_casos.drop(columns=[col])
-                df_export_casos = df_export_casos.merge(df_pesado_rep, on="noticia_representativa_id", how="left")
+
+                class_rep = _serie_classificacao_publica(rep).reset_index(drop=True)
+                rep_publica = pd.concat([rep_publica.reset_index(drop=True), class_rep.reset_index(drop=True)], axis=1)
+                df_export_casos = df_export_casos.merge(rep_publica, on="caso_id", how="left")
+
+                ids_rep = df_export_casos.get("noticia_representativa_id", pd.Series(dtype=float)).dropna().astype(int).tolist()
+                if ids_rep:
+                    df_textos_rep = _buscar_textos_publicos_noticias(ids_rep)
+                    if not df_textos_rep.empty:
+                        df_textos_rep = df_textos_rep.rename(columns={
+                            "id": "noticia_representativa_id",
+                            "resumo": "resumo_representativo",
+                            "texto_completo": "texto_completo_representativo",
+                        })
+                        df_export_casos = df_export_casos.merge(df_textos_rep, on="noticia_representativa_id", how="left")
+
+                # Entidades agregadas por caso, a partir das notícias do recorte.
+                if not df_ent_pub.empty and "id" in df_ent_pub.columns:
+                    mapa_id_caso = base_noticias[["id", "caso_id"]].dropna().copy() if "id" in base_noticias.columns else pd.DataFrame()
+                    if not mapa_id_caso.empty:
+                        ent_caso = df_ent_pub.merge(mapa_id_caso, on="id", how="inner")
+                        linhas_ent = []
+                        for cid, g in ent_caso.groupby("caso_id"):
+                            linhas_ent.append({
+                                "caso_id": cid,
+                                "entidades_pessoas": _unicos_publicos(g.get("entidades_pessoas", pd.Series(dtype=object))),
+                                "entidades_organizacoes": _unicos_publicos(g.get("entidades_organizacoes", pd.Series(dtype=object))),
+                                "entidades_lugares": _unicos_publicos(g.get("entidades_lugares", pd.Series(dtype=object))),
+                                "entidades_outras": _unicos_publicos(g.get("entidades_outras", pd.Series(dtype=object))),
+                            })
+                        if linhas_ent:
+                            df_export_casos = df_export_casos.merge(pd.DataFrame(linhas_ent), on="caso_id", how="left")
+        else:
+            df_export_casos = pd.DataFrame()
+
+        ordem_casos = [
+            "caso_id", "titulo_representativo", "resumo_representativo", "texto_completo_representativo",
+            "url_representativa", "fonte_representativa", "tipo_fonte", "regiao_fonte",
+            "primeira_data_caso", "ultima_data_caso", "janela_dias_caso",
+            "data_publicacao_representativa", "data_coleta_representativa", "data_referencia_representativa",
+            "origem_data_referencia_representativa",
+            "n_noticias_caso", "n_fontes_caso", "fontes_caso", "ids_noticias",
+            "categoria_publica", "familia_categoria", "eixos_analiticos", "enquadramentos", "score_classificacao",
+            "impacto_total_caso", "impacto_ponderado_total_caso", "hhi_fontes_caso",
+            "similaridade_caso_representativa",
+            "entidades_pessoas", "entidades_organizacoes", "entidades_lugares", "entidades_outras",
+        ]
+        if not df_export_casos.empty:
+            if not incluir_texto_completo_publico and "texto_completo_representativo" in df_export_casos.columns:
+                df_export_casos = df_export_casos.drop(columns=["texto_completo_representativo"])
+            df_export_casos = df_export_casos[[c for c in ordem_casos if c in df_export_casos.columns]]
+
+        st.info(
+            "Os CSVs públicos excluem campos de auditoria e depuração, como criterio_filtro, versões internas, "
+            "origem_agrupamento_caso, caso_manual, observações de curadoria, falso_positivo e evidências detalhadas."
+        )
 
         e1, e2 = st.columns(2)
         with e1:
             st.download_button(
-                "Baixar CSV por notícia",
+                "Baixar CSV público por notícia",
                 data=df_export_noticias.to_csv(index=False).encode("utf-8-sig"),
-                file_name="recorte_por_noticia_observatorio_preconceitos.csv",
+                file_name="base_publica_por_noticia_observatorio_preconceitos.csv",
                 mime="text/csv",
                 use_container_width=True
             )
         with e2:
             st.download_button(
-                "Baixar CSV por caso",
+                "Baixar CSV público por caso",
                 data=df_export_casos.to_csv(index=False).encode("utf-8-sig"),
-                file_name="recorte_por_caso_observatorio_preconceitos.csv",
+                file_name="base_publica_por_caso_observatorio_preconceitos.csv",
                 mime="text/csv",
                 use_container_width=True
             )
 
-        aba_exp_noticia, aba_exp_caso = st.tabs(["Prévia por notícia", "Prévia por caso"])
+        aba_exp_noticia, aba_exp_caso = st.tabs(["Prévia pública por notícia", "Prévia pública por caso"])
         with aba_exp_noticia:
             st.dataframe(df_export_noticias.head(100), use_container_width=True, hide_index=True)
         with aba_exp_caso:
