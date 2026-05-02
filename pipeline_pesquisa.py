@@ -100,7 +100,7 @@ CONCEITOS_ALVO = [nlp(termo) for termo in TERMOS_ALVO_SPACY]
 
 # Versão local da reclassificação analítica.
 # Ao mudar este valor, o backfill recalcula os campos v2 já existentes.
-VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica_casos_ia_dedup"
+VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica_casos_equilibrado"
 
 # A categoria residual é tratada como fallback, não como categoria substantiva competidora.
 CATEGORIA_RESIDUAL_V2 = "Estigma, exclusao e conflitos sociais"
@@ -475,6 +475,7 @@ def carregar_prototipos_casos_manuais(conn, limite: int = 5000) -> list[dict]:
         tokens = tokens_para_cluster_caso(titulo or "", resumo or "", texto_completo or "")
         if not tokens:
             continue
+        assinatura = assinatura_factual_caso(titulo or "", resumo or "", texto_completo or "")
         chave = str(caso_id)
         if chave not in agregados:
             agregados[chave] = {
@@ -482,10 +483,12 @@ def carregar_prototipos_casos_manuais(conn, limite: int = 5000) -> list[dict]:
                 "ids": [],
                 "categoria": categoria or "Estigma, exclusao e conflitos sociais",
                 "tokens": set(),
+                "assinatura": {"entidades": set(), "eventos": set(), "contextos": set()},
                 "data_refs": [],
             }
         agregados[chave]["ids"].append(noticia_id)
         agregados[chave]["tokens"].update(tokens)
+        agregados[chave]["assinatura"] = combinar_assinaturas_caso(agregados[chave]["assinatura"], assinatura)
         if data_ref:
             agregados[chave]["data_refs"].append(data_ref.date() if isinstance(data_ref, datetime) else data_ref)
 
@@ -499,6 +502,7 @@ def carregar_prototipos_casos_manuais(conn, limite: int = 5000) -> list[dict]:
             "ids": item["ids"],
             "categoria": item["categoria"],
             "tokens": set(list(item["tokens"])[:180]),
+            "assinatura": item.get("assinatura", {"entidades": set(), "eventos": set(), "contextos": set()}),
             "data_min": data_min,
             "data_max": data_max,
         })
@@ -509,18 +513,20 @@ def carregar_prototipos_casos_manuais(conn, limite: int = 5000) -> list[dict]:
 
 def escolher_prototipo_caso_manual(
     tokens: set[str],
+    assinatura: dict,
     categoria: str,
     data_ref,
     prototipos: list[dict],
     janela_dias: int = 10,
-    limiar: float = 0.42,
-) -> tuple[dict | None, float]:
+    limiar: float = 0.55,
+) -> tuple[dict | None, float, str]:
     """Seleciona o melhor protótipo manual compatível com a notícia."""
     if not tokens or not prototipos:
         return None, 0.0
 
     melhor = None
     melhor_score = 0.0
+    melhor_motivo = "sem_prototipo_compativel"
     for proto in prototipos:
         if categoria and proto.get("categoria") and proto.get("categoria") != categoria:
             continue
@@ -532,14 +538,20 @@ def escolher_prototipo_caso_manual(
             if min(dist_min, dist_max) > janela_dias:
                 continue
 
-        score = similaridade_tokens_caso(tokens, proto.get("tokens", set()))
-        if score > melhor_score:
+        score, permitido, motivo = avaliar_compatibilidade_caso(
+            tokens,
+            assinatura,
+            proto.get("tokens", set()),
+            proto.get("assinatura", {}),
+        )
+        if permitido and score > melhor_score:
             melhor = proto
             melhor_score = score
+            melhor_motivo = motivo
 
     if melhor is not None and melhor_score >= limiar:
-        return melhor, melhor_score
-    return None, melhor_score
+        return melhor, melhor_score, melhor_motivo
+    return None, melhor_score, "sem_prototipo_compativel"
 
 
 # ============================================================
@@ -555,6 +567,135 @@ TERMOS_GENERICOS_CASO = STOPWORDS_CASO | {
     "combate", "direitos", "humanos", "brasil"
 }
 
+# Marcadores usados para criar uma assinatura factual conservadora do caso.
+# A intenção é unir variações do mesmo episódio (ex.: Cássia Kis + transfobia
+# + banheiro/shopping/Rio), sem voltar a agrupar apenas por tema amplo.
+MARCADORES_EVENTO_CASO = {
+    "racismo", "racista", "injuria racial", "injuria", "antissemitismo",
+    "islamofobia", "xenofobia", "homofobia", "transfobia", "lgbtfobia",
+    "misoginia", "misogino", "misogina", "machismo", "capacitismo",
+    "intolerancia religiosa", "discurso de odio", "nazismo", "neonazismo",
+    "preconceito", "discriminacao", "estereotipo", "gordofobia",
+}
+
+MARCADORES_CONTEXTO_CASO = {
+    "shopping", "banheiro", "estadio", "torcida", "jogo", "clube",
+    "escola", "universidade", "unb", "hospital", "igreja", "terreiro",
+    "aeroporto", "condominio", "rua", "metro", "trem", "onibus",
+    "rio", "rj", "sao paulo", "sp", "brasilia", "df", "belem", "para",
+    "santa catarina", "sc", "bahia", "salvador", "recife", "fortaleza",
+    "israel", "hamas", "pstu", "trump", "lula", "bolsonaro",
+}
+
+ENTIDADES_GENERICAS_CASO = {
+    "brasil", "justica", "supremo", "stf", "stj", "camara", "senado",
+    "governo", "ministerio publico", "policia", "tribunal", "estado",
+    "uniao", "pais", "rio", "sao paulo", "brasilia",
+}
+
+
+def _extrair_entidades_titulo_caso(titulo: str) -> set[str]:
+    """
+    Extrai atores centrais do título de modo conservador.
+
+    Usa spaCy quando disponível e complementa com sequências capitalizadas
+    do próprio título. O objetivo não é NER perfeito, mas evitar que o
+    agrupamento dependa apenas de termos temáticos genéricos.
+    """
+    if not titulo:
+        return set()
+
+    entidades = set()
+    try:
+        doc = nlp(titulo)
+        for ent in doc.ents:
+            if ent.label_ in {"PER", "ORG", "LOC"}:
+                valor = normalizar_texto(ent.text)
+                if len(valor) >= 4 and valor not in ENTIDADES_GENERICAS_CASO:
+                    entidades.add(valor)
+    except Exception:
+        pass
+
+    # Sequências com duas ou mais palavras iniciadas por maiúscula: Cássia Kis,
+    # Gustavo Gayer, Erika Hilton, José Maria etc.
+    padrao = r"(?:[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç'’.-]+(?:\s+|$)){2,}"
+    for m in re.finditer(padrao, titulo):
+        valor = normalizar_texto(m.group(0)).strip()
+        valor = re.sub(r"\s+", " ", valor)
+        if len(valor) >= 4 and valor not in ENTIDADES_GENERICAS_CASO:
+            entidades.add(valor)
+
+    return entidades
+
+
+def assinatura_factual_caso(titulo: str = "", resumo: str = "", texto_completo: str = "") -> dict:
+    """
+    Cria uma assinatura factual leve do caso: atores, eventos e contextos.
+
+    Essa assinatura é usada apenas para impedir dois erros opostos:
+    - abrir demais o agrupamento, juntando notícias só porque têm a mesma categoria;
+    - separar demais variações evidentes do mesmo episódio.
+    """
+    texto_curto = normalizar_texto(f"{titulo or ''} {resumo or ''}")
+    texto_longo = texto_curto
+    if texto_completo:
+        texto_longo = normalizar_texto(f"{texto_curto} {texto_completo[:1200]}")
+
+    eventos = {m for m in MARCADORES_EVENTO_CASO if _contem_termo_normalizado(texto_longo, m)}
+    contextos = {m for m in MARCADORES_CONTEXTO_CASO if _contem_termo_normalizado(texto_longo, m)}
+    entidades = _extrair_entidades_titulo_caso(titulo or "")
+
+    return {
+        "entidades": entidades,
+        "eventos": eventos,
+        "contextos": contextos,
+    }
+
+
+def combinar_assinaturas_caso(a: dict, b: dict) -> dict:
+    return {
+        "entidades": set(a.get("entidades", set())) | set(b.get("entidades", set())),
+        "eventos": set(a.get("eventos", set())) | set(b.get("eventos", set())),
+        "contextos": set(a.get("contextos", set())) | set(b.get("contextos", set())),
+    }
+
+
+def avaliar_compatibilidade_caso(tokens_a: set[str], assinatura_a: dict, tokens_b: set[str], assinatura_b: dict) -> tuple[float, bool, str]:
+    """
+    Retorna (score, permitido, motivo) para unir dois registros/casos.
+
+    A regra é conservadora: categoria e janela temporal são verificadas fora
+    desta função; aqui exigimos assinatura factual ou similaridade lexical alta.
+    """
+    base = similaridade_tokens_caso(tokens_a, tokens_b)
+    entidades_comuns = set(assinatura_a.get("entidades", set())) & set(assinatura_b.get("entidades", set()))
+    eventos_comuns = set(assinatura_a.get("eventos", set())) & set(assinatura_b.get("eventos", set()))
+    contextos_comuns = set(assinatura_a.get("contextos", set())) & set(assinatura_b.get("contextos", set()))
+    tokens_comuns = set(tokens_a or set()) & set(tokens_b or set())
+
+    # Melhor caso: mesmo ator central e mesmo marcador discriminatório.
+    if entidades_comuns and eventos_comuns:
+        bonus = 0.08 if contextos_comuns else 0.0
+        return min(1.0, max(base, 0.72 + bonus)), True, "assinatura_entidade_evento"
+
+    # Mesmo ator e contexto, mas sem evento explícito compartilhado: aceita só
+    # com similaridade moderada, para não juntar qualquer notícia sobre a pessoa.
+    if entidades_comuns and contextos_comuns and base >= 0.50:
+        return min(1.0, max(base, 0.64)), True, "assinatura_entidade_contexto"
+
+    # Sem ator comum: só aceita quando há evento comum e forte convergência de
+    # termos raros. Isso evita agrupamento por tema amplo.
+    if eventos_comuns and len(tokens_comuns) >= 4 and base >= 0.66:
+        return base, True, "lexico_forte_evento"
+
+    # Similaridade lexical muito alta ainda pode indicar duplicata/mesmo caso,
+    # mas o limiar é alto para preservar poucos casos bem definidos por dia.
+    if base >= 0.78 and len(tokens_comuns) >= 5:
+        return base, True, "lexico_muito_alto"
+
+    return base, False, "incompativel_assinatura"
+
+
 
 def tokens_para_cluster_caso(titulo: str = "", resumo: str = "", texto_completo: str = "") -> set[str]:
     texto = normalizar_texto(f"{titulo or ''} {resumo or ''}")
@@ -567,12 +708,20 @@ def tokens_para_cluster_caso(titulo: str = "", resumo: str = "", texto_completo:
 def similaridade_tokens_caso(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
+
     inter = len(a & b)
     if inter == 0:
         return 0.0
+
     overlap = inter / max(1, min(len(a), len(b)))
     jaccard = inter / max(1, len(a | b))
-    return round(max(overlap, jaccard * 1.5), 3)
+
+    score = max(overlap, jaccard * 1.5)
+
+    # Garante interpretação como índice entre 0 e 1
+    score = min(1.0, max(0.0, score))
+
+    return round(score, 3)
 
 
 def _data_referencia_cluster(data_publicacao, data_coleta):
@@ -599,7 +748,7 @@ def _criar_caso_id_cluster(categoria: str, data_ref, tokens: set[str], primeiro_
     return "caso_" + hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
 
 
-def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int = 5, limiar: float = 0.38) -> int:
+def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int = 3, limiar: float = 0.52) -> int:
     """Recalcula caso_id por similaridade lexical. Roda no pipeline, não no Streamlit.
 
     A versão atual usa duas camadas:
@@ -647,6 +796,7 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
         categoria = categoria_v2 or categoria_v1 or classificar_categoria_publica(titulo or "", resumo or "", texto_completo or "")
         data_ref = _data_referencia_cluster(data_referencia or data_publicacao, data_coleta)
         tokens = tokens_para_cluster_caso(titulo or "", resumo or "", texto_completo or "")
+        assinatura = assinatura_factual_caso(titulo or "", resumo or "", texto_completo or "")
 
         # 1) Primeiro tenta aprender com casos corrigidos manualmente.
         # Casos jurídicos/institucionais exigem confiança mais alta para não
@@ -655,8 +805,9 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
         if titulo_tem_marcador_juridico(titulo or ""):
             limiar_manual_efetivo = max(limiar_manual_efetivo, LIMIAR_PROTO_MANUAL_ALTA_CONFIANCA)
 
-        proto, score_proto = escolher_prototipo_caso_manual(
+        proto, score_proto, motivo_proto = escolher_prototipo_caso_manual(
             tokens=tokens,
+            assinatura=assinatura,
             categoria=categoria,
             data_ref=data_ref,
             prototipos=prototipos_manuais,
@@ -676,33 +827,42 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
         # 2) Se não houve protótipo manual compatível, usa o cluster automático.
         melhor_idx = None
         melhor_score = 0.0
+        melhor_motivo = "sem_cluster_compativel"
         for idx, cl in enumerate(clusters):
             if cl["categoria"] != categoria:
                 continue
             if _distancia_dias(data_ref, cl["data_ref"]) > janela_dias:
                 continue
-            score = similaridade_tokens_caso(tokens, cl["tokens"])
-            if score > melhor_score:
+            score, permitido, motivo_cluster = avaliar_compatibilidade_caso(
+                tokens,
+                assinatura,
+                cl["tokens"],
+                cl.get("assinatura", {}),
+            )
+            if permitido and score > melhor_score:
                 melhor_score = score
                 melhor_idx = idx
+                melhor_motivo = motivo_cluster
 
         if melhor_idx is not None and melhor_score >= limiar:
             cl = clusters[melhor_idx]
             cl["ids"].append(noticia_id)
             cl["tokens"] = set(list(cl["tokens"] | tokens)[:120])
+            cl["assinatura"] = combinar_assinaturas_caso(cl.get("assinatura", {}), assinatura)
             if data_ref and (cl["data_ref"] is None or data_ref < cl["data_ref"]):
                 cl["data_ref"] = data_ref
             atribuicoes.append({
                 "noticia_id": noticia_id,
                 "cluster_idx": melhor_idx,
                 "score": melhor_score,
-                "origem": "cluster_automatico",
+                "origem": "cluster_automatico_assinatura" if melhor_motivo.startswith("assinatura") else "cluster_automatico",
             })
         else:
             clusters.append({
                 "categoria": categoria,
                 "data_ref": data_ref,
                 "tokens": tokens,
+                "assinatura": assinatura,
                 "ids": [noticia_id],
                 "primeiro_id": noticia_id,
             })
@@ -1596,8 +1756,8 @@ def coletar_noticias() -> None:
         reagrupamento_inicio_n = reagrupar_casos_por_similaridade(
             conn,
             limite=int(os.getenv("CASOS_LIMITE", "10000")),
-            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "5")),
-            limiar=float(os.getenv("CASOS_LIMIAR", "0.38")),
+            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "3")),
+            limiar=float(os.getenv("CASOS_LIMIAR", "0.52")),
         )
 
     if os.getenv("BACKFILL_APENAS", "0") == "1":
@@ -1767,8 +1927,8 @@ def coletar_noticias() -> None:
         reagrupamento_final_n = reagrupar_casos_por_similaridade(
             conn,
             limite=int(os.getenv("CASOS_LIMITE", "10000")),
-            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "10")),
-            limiar=float(os.getenv("CASOS_LIMIAR", "0.45")),
+            janela_dias=int(os.getenv("CASOS_JANELA_DIAS", "3")),
+            limiar=float(os.getenv("CASOS_LIMIAR", "0.55")),
         )
 
     finalizar_execucao_pipeline(
