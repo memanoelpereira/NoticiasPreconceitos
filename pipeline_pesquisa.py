@@ -70,6 +70,31 @@ def normalizar_texto(texto: str) -> str:
     texto = str(texto).lower().strip()
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
 
+
+def titulo_tem_marcador_juridico(titulo: str) -> bool:
+    """
+    Identifica títulos cujo foco narrativo parece jurídico/institucional.
+
+    Quando esses marcadores aparecem, o agrupamento por protótipo manual
+    exige alta confiança, pois uma notícia sobre sentença, processo ou
+    condenação pode compartilhar categoria temática com outro texto sem ser
+    o mesmo caso.
+    """
+    t = normalizar_texto(titulo or "")
+    return any(normalizar_texto(m) in t for m in MARCADORES_JURIDICOS_CASO)
+
+
+def origem_prototipo_por_confianca(similaridade: float) -> str:
+    """Rotula a atribuição por protótipo manual conforme a confiança."""
+    try:
+        sim = float(similaridade)
+    except Exception:
+        sim = 0.0
+
+    if sim >= LIMIAR_PROTO_MANUAL_ALTA_CONFIANCA:
+        return "prototipo_manual_alta_confianca"
+    return "prototipo_manual_baixa_confianca"
+
 # Cria vetores individuais para não diluir o sentido semântico (correção da falha do spaCy)
 CONCEITOS_ALVO = [nlp(termo) for termo in TERMOS_ALVO_SPACY]
 
@@ -80,6 +105,24 @@ VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica_casos_ia_dedu
 # A categoria residual é tratada como fallback, não como categoria substantiva competidora.
 CATEGORIA_RESIDUAL_V2 = "Estigma, exclusao e conflitos sociais"
 LIMIAR_CATEGORIA_SUBSTANTIVA_V2 = 6.0
+
+# ============================================================
+# Parâmetros de confiança para agrupamento por protótipo manual
+# ============================================================
+# A memória manual passa a distinguir atribuições de alta e baixa confiança.
+# Casos com marcadores jurídicos fortes exigem alta confiança para evitar
+# misturar debate temático/opinativo com sentença, processo ou condenação.
+LIMIAR_PROTO_MANUAL_BAIXA_CONFIANCA = 0.55
+LIMIAR_PROTO_MANUAL_ALTA_CONFIANCA = 0.65
+
+MARCADORES_JURIDICOS_CASO = [
+    "condena", "condenado", "condenada", "condenacao", "condenação",
+    "sentenca", "sentença", "prisao", "prisão", "processa", "processado",
+    "processada", "denuncia", "denúncia", "acusado", "acusada",
+    "investigado", "investigada", "justica", "justiça", "tribunal",
+    "juiz", "juiza", "ministério público", "ministerio publico",
+    "stf", "stj", "tse", "mpf"
+]
 
 VERSAO_CRITERIO_FILTRO_ATUAL = "v2_taxonomia_criterios"
 
@@ -590,7 +633,7 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
         )
 
     janela_manual = int(os.getenv("CASOS_MANUAIS_JANELA_DIAS", str(janela_dias)))
-    limiar_manual = float(os.getenv("CASOS_MANUAIS_LIMIAR", "0.55"))
+    limiar_manual = float(os.getenv("CASOS_MANUAIS_LIMIAR", str(LIMIAR_PROTO_MANUAL_BAIXA_CONFIANCA)))
 
     clusters = []
     atribuicoes = []
@@ -606,20 +649,26 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
         tokens = tokens_para_cluster_caso(titulo or "", resumo or "", texto_completo or "")
 
         # 1) Primeiro tenta aprender com casos corrigidos manualmente.
+        # Casos jurídicos/institucionais exigem confiança mais alta para não
+        # misturar debates temáticos com eventos judiciais específicos.
+        limiar_manual_efetivo = float(limiar_manual)
+        if titulo_tem_marcador_juridico(titulo or ""):
+            limiar_manual_efetivo = max(limiar_manual_efetivo, LIMIAR_PROTO_MANUAL_ALTA_CONFIANCA)
+
         proto, score_proto = escolher_prototipo_caso_manual(
             tokens=tokens,
             categoria=categoria,
             data_ref=data_ref,
             prototipos=prototipos_manuais,
             janela_dias=janela_manual,
-            limiar=limiar_manual,
+            limiar=limiar_manual_efetivo,
         )
         if proto is not None:
             atribuicoes.append({
                 "noticia_id": noticia_id,
                 "caso_id": proto["caso_id"],
                 "score": score_proto,
-                "origem": "prototipo_manual",
+                "origem": origem_prototipo_por_confianca(score_proto),
             })
             atribuicoes_por_prototipo += 1
             continue
@@ -696,12 +745,14 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
 
     conn.commit()
     logging.info(
-        "REAGRUPAMENTO_CASOS: %s noticias atualizadas | clusters=%s | prototipos=%s | atribuicoes_por_prototipo=%s | janela=%s | limiar=%.3f",
-        atualizados, len(clusters), len(prototipos_manuais), atribuicoes_por_prototipo, janela_dias, limiar,
+        "REAGRUPAMENTO_CASOS: %s noticias atualizadas | clusters=%s | prototipos=%s | atribuicoes_por_prototipo=%s | janela_auto=%s | limiar_auto=%.3f | janela_manual=%s | limiar_manual=%.3f",
+        atualizados, len(clusters), len(prototipos_manuais), atribuicoes_por_prototipo,
+        janela_dias, limiar, janela_manual, limiar_manual,
     )
     print(
         f"Reagrupamento de casos: {atualizados} notícias atualizadas em {len(clusters)} casos automáticos; "
-        f"{atribuicoes_por_prototipo} atribuídas por protótipos manuais."
+        f"{atribuicoes_por_prototipo} atribuídas por protótipos manuais "
+        f"(janela_manual={janela_manual}, limiar_manual={limiar_manual:.3f})."
     )
     return atualizados
 def parse_data_publicacao(valor: Optional[str]) -> Optional[datetime]:
