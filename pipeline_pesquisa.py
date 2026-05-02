@@ -589,8 +589,8 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
             limite=int(os.getenv("CASOS_MANUAIS_LIMITE", "5000")),
         )
 
-    janela_manual = int(os.getenv("CASOS_MANUAIS_JANELA_DIAS", str(max(10, janela_dias * 2))))
-    limiar_manual = float(os.getenv("CASOS_MANUAIS_LIMIAR", "0.42"))
+    janela_manual = int(os.getenv("CASOS_MANUAIS_JANELA_DIAS", str(janela_dias)))
+    limiar_manual = float(os.getenv("CASOS_MANUAIS_LIMIAR", "0.55"))
 
     clusters = []
     atribuicoes = []
