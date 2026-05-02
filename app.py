@@ -47,91 +47,49 @@ def get_engine():
     )
 
 
-COLUNAS_SCHEMA_MINIMO_NOTICIAS = {
-    "id", "titulo", "fonte", "data_coleta", "data_publicacao",
-    "data_referencia", "origem_data_referencia",
-    "score_relevancia", "classificacao", "criterio_filtro",
-    "versao_criterio_filtro", "url_fonte", "resumo", "texto_completo",
-    "categoria_publica", "eixos_analiticos", "enquadramentos",
-    "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
-    "enquadramentos_v2", "score_categoria_v2",
-    "evidencias_classificacao_v2", "versao_classificacao_analitica",
-    "tipo_fonte", "regiao_fonte", "caso_id", "similaridade_caso",
-    "origem_agrupamento_caso", "caso_manual", "data_curadoria_caso",
-    "observacao_curadoria_caso", "falso_positivo",
-}
-
-
-def garantir_colunas_curadoria_casos(engine) -> bool:
+def garantir_colunas_curadoria_casos(engine) -> None:
     """
-    Checagem leve de schema, sem DDL no Streamlit.
-
-    As migrações de banco devem ser executadas fora do app, pelo script
-    `scripts_migrar_schema_supabase.py` ou pelo SQL Editor do Supabase.
-    Esta função fica com o mesmo nome para preservar chamadas existentes,
-    mas não executa ALTER TABLE nem CREATE INDEX.
+    Garante as colunas usadas pela curadoria manual de casos.
+    A função é idempotente: pode ser chamada várias vezes sem alterar dados existentes.
     """
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(text("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'noticias'
-            """)).fetchall()
-        existentes = {str(r[0]) for r in rows}
-        faltantes = sorted(COLUNAS_SCHEMA_MINIMO_NOTICIAS - existentes)
-        if faltantes:
-            st.warning(
-                "O schema do Supabase ainda não tem todas as colunas esperadas. "
-                "Execute o script de migração antes de usar a curadoria. "
-                f"Colunas ausentes: {', '.join(faltantes[:12])}"
-                + ("..." if len(faltantes) > 12 else "")
-            )
-            return False
-        return True
-    except Exception as e:
-        st.info(f"Não foi possível checar o schema do banco neste momento: {e}")
-        return False
-
-
-# Consulta principal leve: evita carregar `texto_completo` e evidências longas
-# em memória a cada rerun do Streamlit. Esses campos são buscados sob demanda
-# por `carregar_detalhe_noticia()`.
-NOTICIAS_COLUNAS_LEVES = [
-    "id", "titulo", "fonte", "data_coleta", "data_publicacao",
-    "data_referencia", "origem_data_referencia",
-    "score_relevancia", "classificacao", "criterio_filtro",
-    "versao_criterio_filtro", "url_fonte", "resumo",
-    "categoria_publica", "eixos_analiticos", "enquadramentos",
-    "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
-    "enquadramentos_v2", "score_categoria_v2", "versao_classificacao_analitica",
-    "tipo_fonte", "regiao_fonte", "caso_id", "similaridade_caso",
-    "origem_agrupamento_caso", "caso_manual", "data_curadoria_caso",
-    "observacao_curadoria_caso", "falso_positivo",
-]
-
-NOTICIAS_SELECT_LEVE = ",\n                        ".join(NOTICIAS_COLUNAS_LEVES)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_agrupamento_caso TEXT"))
+        conn.execute(text("""
+            UPDATE noticias
+            SET data_referencia = COALESCE(data_publicacao, data_coleta),
+                origem_data_referencia = CASE
+                    WHEN data_publicacao IS NOT NULL THEN 'publicacao'
+                    WHEN data_coleta IS NOT NULL THEN 'coleta'
+                    ELSE 'indefinida'
+                END
+            WHERE data_referencia IS NULL
+               OR origem_data_referencia IS NULL
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)"))
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
     if periodo_sql == "tudo":
-        query = text(f"""
-                     SELECT {NOTICIAS_SELECT_LEVE}
+        query = text("""
+                     SELECT *
                      FROM noticias
-                     WHERE COALESCE(falso_positivo, FALSE) = FALSE
-                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
-                     LIMIT :limite
+                     WHERE falso_positivo = FALSE
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
                      """)
         params = {"limite": int(limite)}
     else:
-        query = text(f"""
-                     SELECT {NOTICIAS_SELECT_LEVE}
+        query = text("""
+                     SELECT *
                      FROM noticias
                      WHERE COALESCE(data_referencia, data_publicacao, data_coleta) >= NOW() - CAST(:intervalo AS INTERVAL)
-                       AND COALESCE(falso_positivo, FALSE) = FALSE
-                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
-                     LIMIT :limite
+                       AND falso_positivo = FALSE
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
                      """)
         params = {
             "limite": int(limite),
@@ -171,36 +129,6 @@ def carregar_dados(periodo_sql: str, limite: int):
         return pd.DataFrame(), pd.DataFrame(), 0, str(e)
 
 
-@st.cache_data(ttl=300)
-def carregar_detalhe_noticia(noticia_id: int):
-    """
-    Carrega campos pesados apenas quando uma notícia é aberta.
-    Isso reduz o consumo de memória da consulta principal.
-    """
-    if noticia_id is None:
-        return pd.DataFrame(), "ID não informado."
-    try:
-        with get_engine().connect() as conn:
-            df = pd.read_sql(
-                text("""
-                    SELECT
-                        id, resumo, texto_completo, url_fonte,
-                        evidencias_classificacao_v2,
-                        categoria_publica_v2, familia_categoria_v2,
-                        eixos_analiticos_v2, enquadramentos_v2,
-                        score_categoria_v2, versao_classificacao_analitica
-                    FROM noticias
-                    WHERE id = :id
-                    LIMIT 1
-                """),
-                conn,
-                params={"id": int(noticia_id)},
-            )
-        return df, None
-    except Exception as e:
-        return pd.DataFrame(), str(e)
-
-
 
 
 @st.cache_data(ttl=60)
@@ -216,16 +144,7 @@ def carregar_saude_pipeline():
         with get_engine().connect() as conn:
             df_exec = pd.read_sql(
                 text("""
-                    SELECT
-                        id, inicio, fim, status, duracao_seg,
-                        portais_total, portais_ok, portais_erro,
-                        extraidos, filtrados, alta_relevancia,
-                        relevancia_contextual, caso_sensivel,
-                        inseridos, duplicados, erros_db,
-                        backfill_atualizados,
-                        reagrupamento_inicio_atualizados,
-                        reagrupamento_final_atualizados,
-                        observacao
+                    SELECT *
                     FROM pipeline_execucoes
                     ORDER BY inicio DESC
                     LIMIT 1
@@ -1582,10 +1501,27 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         impacto_ponderado_total=("impacto_ponderado", "sum"),
     )
     cols_rep = [
-        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao", "data_referencia", "origem_data_referencia", "url_fonte",
+        "caso_id", "id", "titulo", "fonte", "data_coleta", "data_publicacao",
+        "data_referencia", "origem_data_referencia", "url_fonte",
+
+        # Classificação v1 / campos legados
         "categoria_publica", "eixos_preconceito", "eixos_analiticos", "enquadramentos",
-        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro", "versao_criterio_filtro", "score_relevancia",
-        "similaridade_caso", "agrupamento_caso", "caso_id_original_pipeline", "resumo"
+
+        # Classificação analítica v2
+        "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
+        "enquadramentos_v2", "score_categoria_v2", "versao_classificacao_analitica",
+
+        # Fonte, filtro e relevância
+        "tipo_fonte", "regiao_fonte", "classificacao", "criterio_filtro",
+        "versao_criterio_filtro", "score_relevancia",
+
+        # Agrupamento de casos
+        "similaridade_caso", "origem_agrupamento_caso", "agrupamento_caso",
+        "caso_id_original_pipeline", "caso_manual", "data_curadoria_caso",
+        "observacao_curadoria_caso",
+
+        # Campo textual leve
+        "resumo",
     ]
     cols_rep = [c for c in cols_rep if c in rep.columns]
     rep = rep[cols_rep].rename(columns={
@@ -1598,6 +1534,16 @@ def construir_df_casos(df_noticias_base: pd.DataFrame) -> pd.DataFrame:
         "origem_data_referencia": "origem_data_referencia_representativa",
         "url_fonte": "url_representativa",
         "resumo": "resumo_representativo",
+        "categoria_publica_v2": "categoria_publica_v2_representativa",
+        "familia_categoria_v2": "familia_categoria_v2_representativa",
+        "eixos_analiticos_v2": "eixos_analiticos_v2_representativos",
+        "enquadramentos_v2": "enquadramentos_v2_representativos",
+        "score_categoria_v2": "score_categoria_v2_representativo",
+        "versao_classificacao_analitica": "versao_classificacao_analitica_representativa",
+        "origem_agrupamento_caso": "origem_agrupamento_caso_representativa",
+        "caso_manual": "caso_manual_representativo",
+        "data_curadoria_caso": "data_curadoria_caso_representativa",
+        "observacao_curadoria_caso": "observacao_curadoria_caso_representativa",
     })
     casos = agg.merge(rep, on="caso_id", how="left")
     casos["data_referencia_coleta"] = casos["primeira_coleta"]
@@ -2084,14 +2030,7 @@ if st.session_state.noticia_id_aberta is not None and not df_noticias.empty:
         ].copy()
 
     if not selecionada_topo.empty:
-        row_topo = selecionada_topo.iloc[0].copy()
-
-        detalhe_topo, erro_detalhe_topo = carregar_detalhe_noticia(int(row_topo["id"]))
-        if erro_detalhe_topo:
-            st.caption(f"Texto detalhado não carregado: {erro_detalhe_topo}")
-        elif not detalhe_topo.empty:
-            for col, valor in detalhe_topo.iloc[0].items():
-                row_topo[col] = valor
+        row_topo = selecionada_topo.iloc[0]
 
         st.markdown(
             """
@@ -2531,15 +2470,66 @@ else:
     with st.expander("⬇️ Exportar recorte filtrado", expanded=False):
         st.caption(
             "Exporta o recorte após filtros de período, busca, categoria, eixo, enquadramento, portal e tipo de fonte, "
-            "antes do limite visual dos cards. As colunas novas vindas do pipeline são preservadas quando existem no banco."
+            "antes do limite visual dos cards. A exportação inclui os campos analíticos v2, metadados de agrupamento "
+            "e campos de curadoria quando existirem no banco."
         )
+
+        incluir_campos_pesados = st.checkbox(
+            "Incluir campos textuais longos e evidências detalhadas",
+            value=False,
+            key="exportar_campos_pesados_csv",
+            help=(
+                "Inclui resumo, texto completo e evidências da classificação v2. "
+                "Pode deixar o CSV maior e a exportação mais lenta."
+            ),
+        )
+
+        def _buscar_campos_pesados_noticias(ids: list[int]) -> pd.DataFrame:
+            """Busca campos longos somente quando o usuário pede a exportação completa."""
+            ids = [int(x) for x in ids if pd.notna(x)]
+            if not ids:
+                return pd.DataFrame()
+            try:
+                with get_engine().connect() as conn:
+                    return pd.read_sql(
+                        text("""
+                            SELECT id, resumo, texto_completo, evidencias_classificacao_v2
+                            FROM noticias
+                            WHERE id = ANY(:ids)
+                        """),
+                        conn,
+                        params={"ids": ids},
+                    )
+            except Exception as e:
+                st.warning(f"Não foi possível carregar campos textuais longos para exportação: {e}")
+                return pd.DataFrame()
 
         colunas_export_noticias = [
             c for c in [
-                "id", "data_publicacao", "data_coleta", "fonte", "tipo_fonte", "regiao_fonte",
-                "titulo", "url_fonte", "categoria_publica", "eixos_analiticos", "eixos_preconceito",
-                "enquadramentos", "caso_id", "similaridade_caso", "classificacao", "criterio_filtro",
-                "score_relevancia", "impacto", "impacto_ponderado", "resumo", "texto_completo"
+                # Identificação e origem
+                "id", "fonte", "tipo_fonte", "regiao_fonte", "titulo", "url_fonte",
+
+                # Datas
+                "data_publicacao", "data_coleta", "data_referencia", "origem_data_referencia",
+
+                # Classificação v1 / legada
+                "categoria_publica", "eixos_analiticos", "eixos_preconceito", "enquadramentos",
+
+                # Classificação v2
+                "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
+                "enquadramentos_v2", "score_categoria_v2", "versao_classificacao_analitica",
+
+                # Filtro e relevância
+                "classificacao", "criterio_filtro", "versao_criterio_filtro",
+                "score_relevancia", "impacto", "impacto_ponderado",
+
+                # Agrupamento e curadoria de casos
+                "caso_id", "caso_id_original_pipeline", "agrupamento_caso", "similaridade_caso",
+                "origem_agrupamento_caso", "caso_manual", "data_curadoria_caso",
+                "observacao_curadoria_caso",
+
+                # Curadoria geral
+                "falso_positivo",
             ] if c in df_noticias_filtrado_sem_limite.columns
         ]
         df_export_noticias = (
@@ -2547,20 +2537,70 @@ else:
             if colunas_export_noticias else df_noticias_filtrado_sem_limite.copy()
         )
 
+        if incluir_campos_pesados and "id" in df_export_noticias.columns:
+            df_pesado = _buscar_campos_pesados_noticias(df_export_noticias["id"].dropna().tolist())
+            if not df_pesado.empty:
+                # Evita duplicar colunas se alguma delas já veio na consulta principal.
+                for col in ["resumo", "texto_completo", "evidencias_classificacao_v2"]:
+                    if col in df_export_noticias.columns:
+                        df_export_noticias = df_export_noticias.drop(columns=[col])
+                df_export_noticias = df_export_noticias.merge(df_pesado, on="id", how="left")
+
         colunas_export_casos = [
             c for c in [
-                "caso_id", "titulo_representativo", "categoria_publica", "eixos_analiticos",
-                "eixos_preconceito", "enquadramentos", "n_noticias", "n_fontes", "fontes",
-                "ids_noticias", "noticia_representativa_id", "fonte_representativa",
+                # Identificação do caso
+                "caso_id", "titulo_representativo", "noticia_representativa_id",
+                "ids_noticias", "n_noticias", "n_fontes", "fontes",
+
+                # Classificação v1 / legada
+                "categoria_publica", "eixos_analiticos", "eixos_preconceito", "enquadramentos",
+
+                # Classificação v2 da notícia representativa
+                "categoria_publica_v2_representativa", "familia_categoria_v2_representativa",
+                "eixos_analiticos_v2_representativos", "enquadramentos_v2_representativos",
+                "score_categoria_v2_representativo", "versao_classificacao_analitica_representativa",
+
+                # Fonte representativa e URL
+                "fonte_representativa", "tipo_fonte", "regiao_fonte", "url_representativa",
+
+                # Datas agregadas
                 "data_publicacao_min", "data_publicacao_max", "primeira_coleta", "ultima_coleta",
-                "impacto_total", "impacto_ponderado_total", "similaridade_caso", "url_representativa",
-                "resumo_representativo"
+                "data_referencia_min", "data_referencia_max", "data_referencia",
+                "data_referencia_representativa", "origem_data_referencia_representativa",
+
+                # Relevância e agrupamento
+                "impacto_total", "impacto_ponderado_total", "similaridade_caso",
+                "origem_agrupamento_caso_representativa", "agrupamento_caso",
+                "caso_id_original_pipeline", "caso_manual_representativo",
+                "data_curadoria_caso_representativa", "observacao_curadoria_caso_representativa",
+
+                # Campo textual leve
+                "resumo_representativo",
             ] if c in df_casos_filtrado_sem_limite.columns
         ]
         df_export_casos = (
             df_casos_filtrado_sem_limite[colunas_export_casos].copy()
             if colunas_export_casos else df_casos_filtrado_sem_limite.copy()
         )
+
+        if incluir_campos_pesados and "noticia_representativa_id" in df_export_casos.columns:
+            ids_rep = df_export_casos["noticia_representativa_id"].dropna().tolist()
+            df_pesado_rep = _buscar_campos_pesados_noticias(ids_rep)
+            if not df_pesado_rep.empty:
+                df_pesado_rep = df_pesado_rep.rename(columns={
+                    "id": "noticia_representativa_id",
+                    "resumo": "resumo_representativo_completo",
+                    "texto_completo": "texto_completo_representativo",
+                    "evidencias_classificacao_v2": "evidencias_classificacao_v2_representativa",
+                })
+                for col in [
+                    "resumo_representativo_completo",
+                    "texto_completo_representativo",
+                    "evidencias_classificacao_v2_representativa",
+                ]:
+                    if col in df_export_casos.columns:
+                        df_export_casos = df_export_casos.drop(columns=[col])
+                df_export_casos = df_export_casos.merge(df_pesado_rep, on="noticia_representativa_id", how="left")
 
         e1, e2 = st.columns(2)
         with e1:
