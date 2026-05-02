@@ -73,6 +73,12 @@ def normalizar_texto(texto: str) -> str:
 # Cria vetores individuais para não diluir o sentido semântico (correção da falha do spaCy)
 CONCEITOS_ALVO = [nlp(termo) for termo in TERMOS_ALVO_SPACY]
 
+# Versão efetiva da classificação analítica v2 usada pelo pipeline.
+# O sufixo força o backfill a recalcular registros já classificados pela primeira v2,
+# agora aplicando a regra de que a categoria residual só vence quando não há
+# categoria substantiva com evidência mínima suficiente.
+VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica_residual_fallback"
+
 VERSAO_CRITERIO_FILTRO_ATUAL = "v2_taxonomia_criterios"
 
 MAPA_CRITERIOS_FILTRO_V2 = {
@@ -285,6 +291,43 @@ def _pontuar_categoria_v2(titulo: str, resumo: str, texto_completo: str, categor
     }
 
 
+
+
+CATEGORIA_RESIDUAL_V2 = "Estigma, exclusao e conflitos sociais"
+LIMIAR_CATEGORIA_SUBSTANTIVA_V2 = 6.0
+
+
+def escolher_categoria_principal_v2(pontuacoes: list[dict]) -> dict | None:
+    """
+    Escolhe a categoria principal da classificação analítica v2.
+
+    A categoria residual é tratada como fallback: ela só vence quando nenhuma
+    categoria substantiva alcança evidência mínima. Isso evita que termos
+    transversais, como preconceito, estigma, discriminação, estereótipo e
+    discurso de ódio, dominem casos em que há alvo social claro.
+    """
+    if not pontuacoes:
+        return None
+
+    pontuacoes_validas = [
+        p for p in pontuacoes
+        if isinstance(p, dict) and float(p.get("score", 0) or 0) > 0
+    ]
+    if not pontuacoes_validas:
+        return None
+
+    substantivas = [
+        p for p in pontuacoes_validas
+        if p.get("categoria") != CATEGORIA_RESIDUAL_V2
+        and float(p.get("score", 0) or 0) >= LIMIAR_CATEGORIA_SUBSTANTIVA_V2
+    ]
+
+    if substantivas:
+        return sorted(substantivas, key=lambda x: float(x.get("score", 0) or 0), reverse=True)[0]
+
+    return sorted(pontuacoes_validas, key=lambda x: float(x.get("score", 0) or 0), reverse=True)[0]
+
+
 def classificar_analiticamente_v2(titulo: str = "", resumo: str = "", texto_completo: str = "") -> dict:
     pontuacoes = []
     for categoria, blocos in CATEGORIAS_PUBLICAS_V2.items():
@@ -305,9 +348,17 @@ def classificar_analiticamente_v2(titulo: str = "", resumo: str = "", texto_comp
         }
 
     pontuacoes = sorted(pontuacoes, key=lambda x: x["score"], reverse=True)
-    top = pontuacoes[0]
+    top = escolher_categoria_principal_v2(pontuacoes) or pontuacoes[0]
+
+    # A lista de eixos preserva a distribuição de evidências, mas coloca a
+    # categoria principal escolhida em primeiro lugar quando ela não é a de
+    # maior score bruto. Isso torna a auditoria mais legível.
     limiar = max(3.0, float(top["score"]) * 0.35)
     selecionadas = [p for p in pontuacoes if float(p["score"]) >= limiar][:6]
+    if top not in selecionadas:
+        selecionadas = [top] + selecionadas[:5]
+    else:
+        selecionadas = [top] + [p for p in selecionadas if p is not top][:5]
 
     # Enquadramentos v2: mais simples, mas usando a mesma lógica de campo ponderado.
     pont_enq = []
