@@ -73,6 +73,14 @@ def normalizar_texto(texto: str) -> str:
 # Cria vetores individuais para não diluir o sentido semântico (correção da falha do spaCy)
 CONCEITOS_ALVO = [nlp(termo) for termo in TERMOS_ALVO_SPACY]
 
+# Versão local da reclassificação analítica.
+# Ao mudar este valor, o backfill recalcula os campos v2 já existentes.
+VERSAO_CLASSIFICACAO_ANALITICA_ATUAL = "v2_classificacao_analitica_casos_ia_dedup"
+
+# A categoria residual é tratada como fallback, não como categoria substantiva competidora.
+CATEGORIA_RESIDUAL_V2 = "Estigma, exclusao e conflitos sociais"
+LIMIAR_CATEGORIA_SUBSTANTIVA_V2 = 6.0
+
 VERSAO_CRITERIO_FILTRO_ATUAL = "v2_taxonomia_criterios"
 
 MAPA_CRITERIOS_FILTRO_V2 = {
@@ -259,6 +267,7 @@ def _pontuar_categoria_v2(titulo: str, resumo: str, texto_completo: str, categor
     ]
     score = 0.0
     evidencias = []
+    evidencias_vistas = set()
     pesos = PESOS_CLASSIFICACAO_V2
 
     for tipo_evidencia, termos in (blocos or {}).items():
@@ -267,10 +276,16 @@ def _pontuar_categoria_v2(titulo: str, resumo: str, texto_completo: str, categor
         if tipo_evidencia not in pesos and tipo_evidencia != "termos_amplos":
             continue
         peso_tipo = pesos.get("termo_amplo" if tipo_evidencia == "termos_amplos" else tipo_evidencia, 1.0)
+
+        # Remove duplicações internas preservando a ordem.
         for termo in list(dict.fromkeys(str(t) for t in termos if str(t).strip())):
             termo_norm = normalizar_texto(termo)
             for nome_campo, texto_norm in campos:
                 if _contem_termo_normalizado(texto_norm, termo_norm):
+                    chave = (tipo_evidencia, termo_norm, nome_campo)
+                    if chave in evidencias_vistas:
+                        break
+                    evidencias_vistas.add(chave)
                     peso_campo = pesos.get(nome_campo, 1.0)
                     incremento = float(peso_tipo) * float(peso_campo)
                     score += incremento
@@ -283,6 +298,32 @@ def _pontuar_categoria_v2(titulo: str, resumo: str, texto_completo: str, categor
         "score": round(score, 3),
         "evidencias": evidencias[:18],
     }
+
+
+def escolher_categoria_principal_v2(pontuacoes: list[dict]) -> dict:
+    """
+    Escolhe a categoria principal da v2.
+
+    A categoria residual funciona como fallback: ela só vence quando nenhuma
+    categoria substantiva alcança evidência mínima. Isso evita que termos
+    transversais como preconceito, estigma, estereótipo e discriminação
+    dominem notícias com alvo social claro.
+    """
+    if not pontuacoes:
+        return {
+            "categoria": CATEGORIA_RESIDUAL_V2,
+            "familia": FAMILIAS_CATEGORIAS_V2.get(CATEGORIA_RESIDUAL_V2, "Categoria residual"),
+            "score": 0.0,
+            "evidencias": [],
+        }
+
+    ordenadas = sorted(pontuacoes, key=lambda x: float(x.get("score", 0) or 0), reverse=True)
+    substantivas = [
+        p for p in ordenadas
+        if p.get("categoria") != CATEGORIA_RESIDUAL_V2
+        and float(p.get("score", 0) or 0) >= LIMIAR_CATEGORIA_SUBSTANTIVA_V2
+    ]
+    return substantivas[0] if substantivas else ordenadas[0]
 
 
 def classificar_analiticamente_v2(titulo: str = "", resumo: str = "", texto_completo: str = "") -> dict:
@@ -305,7 +346,7 @@ def classificar_analiticamente_v2(titulo: str = "", resumo: str = "", texto_comp
         }
 
     pontuacoes = sorted(pontuacoes, key=lambda x: x["score"], reverse=True)
-    top = pontuacoes[0]
+    top = escolher_categoria_principal_v2(pontuacoes)
     limiar = max(3.0, float(top["score"]) * 0.35)
     selecionadas = [p for p in pontuacoes if float(p["score"]) >= limiar][:6]
 
@@ -346,6 +387,117 @@ def classificar_analiticamente_v2(titulo: str = "", resumo: str = "", texto_comp
         "evidencias_classificacao_v2": f"Categorias: {evidencias_cat} || Enquadramentos: {evidencias_enq}",
         "versao_classificacao_analitica": VERSAO_CLASSIFICACAO_ANALITICA_ATUAL,
     }
+
+# ============================================================
+# Memória de casos manuais: protótipos para auxiliar o agrupamento
+# ============================================================
+
+def carregar_prototipos_casos_manuais(conn, limite: int = 5000) -> list[dict]:
+    """
+    Carrega casos curados manualmente como protótipos de agrupamento.
+
+    Esses protótipos não reclassificam os registros manuais; eles servem como
+    exemplos para que novas notícias semelhantes sejam aproximadas do mesmo
+    caso_id. É uma camada leve de aprendizado com curadoria humana, sem chamar
+    serviços externos de IA.
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, caso_id, titulo, resumo, texto_completo,
+                       COALESCE(categoria_publica_v2, categoria_publica) AS categoria,
+                       COALESCE(data_referencia, data_publicacao, data_coleta) AS data_ref
+                FROM noticias
+                WHERE COALESCE(caso_manual, FALSE) = TRUE
+                  AND COALESCE(falso_positivo, FALSE) = FALSE
+                  AND caso_id IS NOT NULL
+                  AND titulo IS NOT NULL
+                ORDER BY COALESCE(data_curadoria_caso, data_referencia, data_coleta) DESC
+                LIMIT %s
+                """,
+                (int(limite),),
+            )
+            rows = cursor.fetchall()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logging.error("Erro ao carregar protótipos de casos manuais: %s", e)
+        return []
+
+    agregados = {}
+    for noticia_id, caso_id, titulo, resumo, texto_completo, categoria, data_ref in rows:
+        tokens = tokens_para_cluster_caso(titulo or "", resumo or "", texto_completo or "")
+        if not tokens:
+            continue
+        chave = str(caso_id)
+        if chave not in agregados:
+            agregados[chave] = {
+                "caso_id": chave,
+                "ids": [],
+                "categoria": categoria or "Estigma, exclusao e conflitos sociais",
+                "tokens": set(),
+                "data_refs": [],
+            }
+        agregados[chave]["ids"].append(noticia_id)
+        agregados[chave]["tokens"].update(tokens)
+        if data_ref:
+            agregados[chave]["data_refs"].append(data_ref.date() if isinstance(data_ref, datetime) else data_ref)
+
+    prototipos = []
+    for item in agregados.values():
+        datas = [d for d in item["data_refs"] if d is not None]
+        data_min = min(datas) if datas else None
+        data_max = max(datas) if datas else None
+        prototipos.append({
+            "caso_id": item["caso_id"],
+            "ids": item["ids"],
+            "categoria": item["categoria"],
+            "tokens": set(list(item["tokens"])[:180]),
+            "data_min": data_min,
+            "data_max": data_max,
+        })
+
+    logging.info("PROTOTIPOS_CASOS_MANUAIS: %s casos carregados", len(prototipos))
+    return prototipos
+
+
+def escolher_prototipo_caso_manual(
+    tokens: set[str],
+    categoria: str,
+    data_ref,
+    prototipos: list[dict],
+    janela_dias: int = 10,
+    limiar: float = 0.42,
+) -> tuple[dict | None, float]:
+    """Seleciona o melhor protótipo manual compatível com a notícia."""
+    if not tokens or not prototipos:
+        return None, 0.0
+
+    melhor = None
+    melhor_score = 0.0
+    for proto in prototipos:
+        if categoria and proto.get("categoria") and proto.get("categoria") != categoria:
+            continue
+
+        # Se houver datas, usa uma janela mais tolerante ao redor do caso manual.
+        if data_ref is not None and (proto.get("data_min") is not None or proto.get("data_max") is not None):
+            dist_min = _distancia_dias(data_ref, proto.get("data_min")) if proto.get("data_min") is not None else 999999
+            dist_max = _distancia_dias(data_ref, proto.get("data_max")) if proto.get("data_max") is not None else 999999
+            if min(dist_min, dist_max) > janela_dias:
+                continue
+
+        score = similaridade_tokens_caso(tokens, proto.get("tokens", set()))
+        if score > melhor_score:
+            melhor = proto
+            melhor_score = score
+
+    if melhor is not None and melhor_score >= limiar:
+        return melhor, melhor_score
+    return None, melhor_score
+
 
 # ============================================================
 # Agrupamento real por CASO no pipeline
@@ -405,11 +557,19 @@ def _criar_caso_id_cluster(categoria: str, data_ref, tokens: set[str], primeiro_
 
 
 def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int = 5, limiar: float = 0.38) -> int:
-    """Recalcula caso_id por similaridade lexical. Roda no pipeline, não no Streamlit."""
+    """Recalcula caso_id por similaridade lexical. Roda no pipeline, não no Streamlit.
+
+    A versão atual usa duas camadas:
+    1. protótipos de casos manuais, quando disponíveis;
+    2. agrupamento automático por similaridade lexical.
+
+    Assim, a curadoria humana passa a orientar novos agrupamentos sem que os
+    registros manuais sejam sobrescritos.
+    """
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, titulo, fonte, data_coleta, data_publicacao, data_referencia,
-               categoria_publica, resumo, texto_completo
+               categoria_publica_v2, categoria_publica, resumo, texto_completo
         FROM noticias
         WHERE titulo IS NOT NULL
           AND COALESCE(caso_manual, FALSE) = FALSE
@@ -421,15 +581,50 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
     if not rows:
         return 0
 
+    usar_memoria_manual = os.getenv("APRENDER_CASOS_MANUAIS", "1").strip() == "1"
+    prototipos_manuais = []
+    if usar_memoria_manual:
+        prototipos_manuais = carregar_prototipos_casos_manuais(
+            conn,
+            limite=int(os.getenv("CASOS_MANUAIS_LIMITE", "5000")),
+        )
+
+    janela_manual = int(os.getenv("CASOS_MANUAIS_JANELA_DIAS", str(max(10, janela_dias * 2))))
+    limiar_manual = float(os.getenv("CASOS_MANUAIS_LIMIAR", "0.42"))
+
     clusters = []
     atribuicoes = []
+    atribuicoes_por_prototipo = 0
 
     for row in rows:
-        noticia_id, titulo, fonte, data_coleta, data_publicacao, data_referencia, categoria, resumo, texto_completo = row
-        categoria = categoria or classificar_categoria_publica(titulo or "", resumo or "", texto_completo or "")
+        (
+            noticia_id, titulo, fonte, data_coleta, data_publicacao, data_referencia,
+            categoria_v2, categoria_v1, resumo, texto_completo
+        ) = row
+        categoria = categoria_v2 or categoria_v1 or classificar_categoria_publica(titulo or "", resumo or "", texto_completo or "")
         data_ref = _data_referencia_cluster(data_referencia or data_publicacao, data_coleta)
         tokens = tokens_para_cluster_caso(titulo or "", resumo or "", texto_completo or "")
 
+        # 1) Primeiro tenta aprender com casos corrigidos manualmente.
+        proto, score_proto = escolher_prototipo_caso_manual(
+            tokens=tokens,
+            categoria=categoria,
+            data_ref=data_ref,
+            prototipos=prototipos_manuais,
+            janela_dias=janela_manual,
+            limiar=limiar_manual,
+        )
+        if proto is not None:
+            atribuicoes.append({
+                "noticia_id": noticia_id,
+                "caso_id": proto["caso_id"],
+                "score": score_proto,
+                "origem": "prototipo_manual",
+            })
+            atribuicoes_por_prototipo += 1
+            continue
+
+        # 2) Se não houve protótipo manual compatível, usa o cluster automático.
         melhor_idx = None
         melhor_score = 0.0
         for idx, cl in enumerate(clusters):
@@ -448,7 +643,12 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
             cl["tokens"] = set(list(cl["tokens"] | tokens)[:120])
             if data_ref and (cl["data_ref"] is None or data_ref < cl["data_ref"]):
                 cl["data_ref"] = data_ref
-            atribuicoes.append((noticia_id, melhor_idx, melhor_score))
+            atribuicoes.append({
+                "noticia_id": noticia_id,
+                "cluster_idx": melhor_idx,
+                "score": melhor_score,
+                "origem": "cluster_automatico",
+            })
         else:
             clusters.append({
                 "categoria": categoria,
@@ -457,7 +657,12 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
                 "ids": [noticia_id],
                 "primeiro_id": noticia_id,
             })
-            atribuicoes.append((noticia_id, len(clusters) - 1, 1.0))
+            atribuicoes.append({
+                "noticia_id": noticia_id,
+                "cluster_idx": len(clusters) - 1,
+                "score": 1.0,
+                "origem": "novo_cluster_automatico",
+            })
 
     caso_ids = {
         idx: _criar_caso_id_cluster(cl["categoria"], cl["data_ref"], cl["tokens"], cl["primeiro_id"])
@@ -465,25 +670,39 @@ def reagrupar_casos_por_similaridade(conn, limite: int = 10000, janela_dias: int
     }
 
     atualizados = 0
-    for noticia_id, cluster_idx, score in atribuicoes:
+    for atribuicao in atribuicoes:
+        if atribuicao.get("caso_id"):
+            caso_id_final = atribuicao["caso_id"]
+        else:
+            caso_id_final = caso_ids[atribuicao["cluster_idx"]]
+
         cursor.execute(
             """
             UPDATE noticias
             SET caso_id = %s,
-                similaridade_caso = %s
+                similaridade_caso = %s,
+                origem_agrupamento_caso = %s
             WHERE id = %s
               AND COALESCE(caso_manual, FALSE) = FALSE
             """,
-            (caso_ids[cluster_idx], float(round(score, 3)), noticia_id),
+            (
+                caso_id_final,
+                float(round(atribuicao["score"], 3)),
+                atribuicao["origem"],
+                atribuicao["noticia_id"],
+            ),
         )
         atualizados += cursor.rowcount
 
     conn.commit()
     logging.info(
-        "REAGRUPAMENTO_CASOS: %s noticias atualizadas | clusters=%s | janela=%s | limiar=%.3f",
-        atualizados, len(clusters), janela_dias, limiar,
+        "REAGRUPAMENTO_CASOS: %s noticias atualizadas | clusters=%s | prototipos=%s | atribuicoes_por_prototipo=%s | janela=%s | limiar=%.3f",
+        atualizados, len(clusters), len(prototipos_manuais), atribuicoes_por_prototipo, janela_dias, limiar,
     )
-    print(f"Reagrupamento de casos: {atualizados} notícias atualizadas em {len(clusters)} casos.")
+    print(
+        f"Reagrupamento de casos: {atualizados} notícias atualizadas em {len(clusters)} casos automáticos; "
+        f"{atribuicoes_por_prototipo} atribuídas por protótipos manuais."
+    )
     return atualizados
 def parse_data_publicacao(valor: Optional[str]) -> Optional[datetime]:
     if not valor:
@@ -619,27 +838,26 @@ def classificar_titulo(titulo: str) -> tuple:
 
     sim = calcular_similaridade_focada(t)
 
+    # -------------------------------------------------------------
+    # 🧠 Aprendizado com curadoria humana de falsos positivos
+    # -------------------------------------------------------------
+    try:
+        if 'VETORES_FALSOS_POSITIVOS' in globals() and VETORES_FALSOS_POSITIVOS:
+            doc_t = nlp(t)
+            if doc_t.has_vector:
+                sim_com_lixo = [doc_t.similarity(v_lixo) for v_lixo in VETORES_FALSOS_POSITIVOS if v_lixo.has_vector]
+                max_lixo = max(sim_com_lixo) if sim_com_lixo else 0.0
+                limiar_lixo = float(os.getenv("LIMIAR_APRENDIZADO_CURADORIA", "0.88"))
+                if max_lixo >= limiar_lixo:
+                    logging.info("REJEITADO (aprendizado_curadoria: %.3f) - %s", max_lixo, titulo)
+                    return False, None, max_lixo, "exclusao_aprendizado_curadoria"
+    except Exception as e:
+        logging.error(f"Erro no módulo de aprendizado para o título '{titulo}': {e}")
+    # -------------------------------------------------------------
+
     if sim == 0.0:
         logging.info("REJEITADO (sem_vetor) - %s", titulo)
         return False, None, 0.0, "exclusao_sem_vetor"
-
-        # -------------------------------------------------------------
-        # 🧠 APRENDIZADO DE MÁQUINA: Bloqueio por Memória de Curadoria
-        # -------------------------------------------------------------
-        try:
-            # Só executa se a variável global existir e não estiver vazia
-            if 'VETORES_FALSOS_POSITIVOS' in globals() and VETORES_FALSOS_POSITIVOS:
-                doc_t = nlp(t)
-                if doc_t.has_vector:
-                    sim_com_lixo = [doc_t.similarity(v_lixo) for v_lixo in VETORES_FALSOS_POSITIVOS if
-                                    v_lixo.has_vector]
-
-                    if sim_com_lixo and max(sim_com_lixo) >= 0.88:
-                        logging.info("REJEITADO (aprendizado_curadoria: %.3f) - %s", max(sim_com_lixo), titulo)
-                        return False, None, max(sim_com_lixo), "exclusao_aprendizado_curadoria"
-        except Exception as e:
-            logging.error(f"Erro no módulo de aprendizado para o título '{titulo}': {e}")
-        # -------------------------------------------------------------
 
     n_sinais = sum([tem_grupo, tem_conflito, tem_contexto])
 
@@ -774,6 +992,7 @@ def preparar_banco(conn) -> None:
             regiao_fonte     TEXT,
             caso_id          TEXT,
             similaridade_caso DOUBLE PRECISION,
+            origem_agrupamento_caso TEXT,
             caso_manual      BOOLEAN DEFAULT FALSE,
             data_curadoria_caso TIMESTAMPTZ,
             observacao_curadoria_caso TEXT
@@ -812,6 +1031,7 @@ def preparar_banco(conn) -> None:
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS regiao_fonte TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_id TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS similaridade_caso DOUBLE PRECISION",
+        "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_agrupamento_caso TEXT",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ",
         "ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT",
@@ -1301,6 +1521,10 @@ def backfill_campos_analiticos(conn, limite: int = 5000, preencher_data_publicac
 def coletar_noticias() -> None:
     conn = psycopg2.connect(DB_URL)
     preparar_banco(conn)
+
+    if os.getenv("USAR_MEMORIA_FALSOS_POSITIVOS", "1").strip() == "1":
+        carregar_memoria_falsos_positivos(conn)
+
     if os.getenv("MIGRAR_CRITERIOS_FILTRO", "1").strip() == "1":
         migrados_criterios = migrar_criterios_filtro_v2(
             conn,
