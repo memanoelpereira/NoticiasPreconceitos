@@ -59,13 +59,7 @@ def garantir_colunas_curadoria_casos(engine) -> None:
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
         conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS categoria_publica_v2 TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS familia_categoria_v2 TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS eixos_analiticos_v2 TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS enquadramentos_v2 TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS score_categoria_v2 DOUBLE PRECISION"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS evidencias_classificacao_v2 TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_classificacao_analitica TEXT"))
+        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_agrupamento_caso TEXT"))
         conn.execute(text("""
             UPDATE noticias
             SET data_referencia = COALESCE(data_publicacao, data_coleta),
@@ -78,8 +72,6 @@ def garantir_colunas_curadoria_casos(engine) -> None:
                OR origem_data_referencia IS NULL
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_categoria_publica_v2 ON noticias (categoria_publica_v2)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_familia_categoria_v2 ON noticias (familia_categoria_v2)"))
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
@@ -569,118 +561,292 @@ def renderizar_gestao_fontes() -> None:
             st.dataframe(df_ag.sort_values(["fonte"])[colunas_base], use_container_width=True, hide_index=True)
 
 
-def renderizar_auditoria_reclassificacao_v2() -> None:
-    """Painel comparativo da classificação analítica v1 × v2. Deve rodar apenas na área protegida."""
-    with st.expander("🧪 Auditoria da reclassificação analítica v2", expanded=True):
-        garantir_colunas_curadoria_casos(get_engine())
 
-        col_a, col_b, col_c = st.columns([1, 1, 2])
-        with col_a:
-            limite_v2 = st.selectbox(
-                "Limite",
-                [50, 100, 200, 500, 1000, 2000],
-                index=2,
-                key="auditoria_reclass_v2_limite"
-            )
-        with col_b:
-            apenas_divergentes = st.checkbox(
-                "Apenas divergências",
-                value=True,
-                key="auditoria_reclass_v2_divergencias"
-            )
-        with col_c:
-            termo_v2 = st.text_input(
-                "Buscar na auditoria",
-                key="auditoria_reclass_v2_busca"
-            )
-
-        filtros = ["COALESCE(falso_positivo, FALSE) = FALSE"]
-        params = {"limite": int(limite_v2)}
-        if apenas_divergentes:
-            filtros.append("""
-                (
-                    COALESCE(categoria_publica, '') <> COALESCE(categoria_publica_v2, '')
-                 OR COALESCE(eixos_analiticos, '') <> COALESCE(eixos_analiticos_v2, '')
-                 OR COALESCE(enquadramentos, '') <> COALESCE(enquadramentos_v2, '')
-                )
-            """)
-        if termo_v2.strip():
-            filtros.append("""
-                (
-                    titulo ILIKE :termo OR fonte ILIKE :termo
-                 OR categoria_publica ILIKE :termo OR categoria_publica_v2 ILIKE :termo
-                 OR familia_categoria_v2 ILIKE :termo
-                )
-            """)
-            params["termo"] = f"%{termo_v2.strip()}%"
-        where_sql = " AND ".join(filtros)
-
-        try:
-            with get_engine().connect() as conn:
-                df_resumo = pd.read_sql(text("""
+@st.cache_data(ttl=120)
+def carregar_auditoria_casos(limite_casos: int = 100):
+    """Carrega diagnósticos agregados para auditoria dos casos e agrupamentos."""
+    try:
+        with get_engine().connect() as conn:
+            df_origens = pd.read_sql(
+                text("""
                     SELECT
-                        COUNT(*) AS total,
-                        COUNT(*) FILTER (WHERE categoria_publica_v2 IS NOT NULL) AS com_v2,
-                        COUNT(*) FILTER (WHERE COALESCE(categoria_publica, '') <> COALESCE(categoria_publica_v2, '')) AS diverg_categoria,
-                        COUNT(*) FILTER (WHERE COALESCE(enquadramentos, '') <> COALESCE(enquadramentos_v2, '')) AS diverg_enquadramento,
-                        COUNT(DISTINCT categoria_publica_v2) AS n_categorias_v2,
-                        COUNT(DISTINCT familia_categoria_v2) AS n_familias_v2
+                        COALESCE(origem_agrupamento_caso, 'sem_origem') AS origem_agrupamento_caso,
+                        COUNT(*) AS n
                     FROM noticias
                     WHERE COALESCE(falso_positivo, FALSE) = FALSE
-                """), conn)
-                df_familias = pd.read_sql(text("""
-                    SELECT COALESCE(familia_categoria_v2, 'Não classificado') AS familia_categoria_v2,
-                           COUNT(*) AS n
-                    FROM noticias
-                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
-                    GROUP BY 1
+                    GROUP BY COALESCE(origem_agrupamento_caso, 'sem_origem')
                     ORDER BY n DESC
-                """), conn)
-                df_comp = pd.read_sql(text(f"""
-                    SELECT id, data_referencia, fonte, titulo,
-                           categoria_publica, categoria_publica_v2, familia_categoria_v2,
-                           eixos_analiticos, eixos_analiticos_v2,
-                           enquadramentos, enquadramentos_v2,
-                           score_categoria_v2, evidencias_classificacao_v2,
-                           versao_classificacao_analitica
+                """),
+                conn,
+            )
+
+            df_casos = pd.read_sql(
+                text("""
+                    SELECT
+                        caso_id,
+                        COUNT(*) AS n,
+                        COUNT(DISTINCT COALESCE(categoria_publica_v2, '')) AS categorias_distintas,
+                        MIN(data_referencia) AS primeira_data,
+                        MAX(data_referencia) AS ultima_data,
+                        ROUND((EXTRACT(EPOCH FROM (MAX(data_referencia) - MIN(data_referencia))) / 86400.0)::numeric, 2) AS janela_dias,
+                        MIN(similaridade_caso) AS sim_min,
+                        MAX(similaridade_caso) AS sim_max,
+                        SUM(CASE WHEN origem_agrupamento_caso = 'prototipo_manual_alta_confianca' THEN 1 ELSE 0 END) AS n_proto_alta,
+                        SUM(CASE WHEN origem_agrupamento_caso = 'prototipo_manual_baixa_confianca' THEN 1 ELSE 0 END) AS n_proto_baixa,
+                        SUM(CASE WHEN origem_agrupamento_caso IS NULL OR origem_agrupamento_caso = 'cluster_automatico_legado' THEN 1 ELSE 0 END) AS n_origem_legada,
+                        SUM(CASE WHEN COALESCE(caso_manual, FALSE) = TRUE THEN 1 ELSE 0 END) AS n_manuais,
+                        STRING_AGG(id::text || ' - ' || titulo, E'\n' ORDER BY data_referencia) AS titulos
                     FROM noticias
-                    WHERE {where_sql}
-                    ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                      AND caso_id IS NOT NULL
+                    GROUP BY caso_id
+                    HAVING COUNT(*) >= 2
+                    ORDER BY categorias_distintas DESC, n DESC, sim_min ASC NULLS FIRST
                     LIMIT :limite
-                """), conn, params=params)
-        except Exception as e:
-            st.error(f"Erro ao carregar auditoria da reclassificação v2: {e}")
-            return
+                """),
+                conn,
+                params={"limite": int(limite_casos)},
+            )
 
-        if not df_resumo.empty:
-            r = df_resumo.iloc[0]
-            k1, k2, k3, k4, k5, k6 = st.columns(6)
-            k1.metric("Registros ativos", int(r.get("total", 0) or 0))
-            k2.metric("Com v2", int(r.get("com_v2", 0) or 0))
-            k3.metric("Diverg. categoria", int(r.get("diverg_categoria", 0) or 0))
-            k4.metric("Diverg. enquadr.", int(r.get("diverg_enquadramento", 0) or 0))
-            k5.metric("Categorias v2", int(r.get("n_categorias_v2", 0) or 0))
-            k6.metric("Famílias v2", int(r.get("n_familias_v2", 0) or 0))
+            df_baixa = pd.read_sql(
+                text("""
+                    SELECT
+                        id, fonte, titulo, caso_id, similaridade_caso,
+                        origem_agrupamento_caso, categoria_publica_v2,
+                        familia_categoria_v2, data_referencia
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                      AND origem_agrupamento_caso = 'prototipo_manual_baixa_confianca'
+                    ORDER BY similaridade_caso ASC NULLS FIRST, data_referencia DESC
+                    LIMIT 300
+                """),
+                conn,
+            )
 
+            df_proto = pd.read_sql(
+                text("""
+                    SELECT
+                        id, fonte, titulo, caso_id, similaridade_caso,
+                        origem_agrupamento_caso, categoria_publica_v2,
+                        familia_categoria_v2, data_referencia
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                      AND origem_agrupamento_caso IN (
+                          'prototipo_manual_alta_confianca',
+                          'prototipo_manual_baixa_confianca'
+                      )
+                    ORDER BY origem_agrupamento_caso, similaridade_caso ASC NULLS FIRST, data_referencia DESC
+                    LIMIT 500
+                """),
+                conn,
+            )
+
+            df_legado = pd.read_sql(
+                text("""
+                    SELECT
+                        id, fonte, titulo, caso_id, similaridade_caso,
+                        COALESCE(origem_agrupamento_caso, 'sem_origem') AS origem_agrupamento_caso,
+                        categoria_publica_v2, data_referencia
+                    FROM noticias
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                      AND caso_id IS NOT NULL
+                      AND (origem_agrupamento_caso IS NULL OR origem_agrupamento_caso = 'cluster_automatico_legado')
+                    ORDER BY data_referencia DESC
+                    LIMIT 500
+                """),
+                conn,
+            )
+
+        return df_origens, df_casos, df_baixa, df_proto, df_legado, None
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), str(e)
+
+
+@st.cache_data(ttl=120)
+def carregar_detalhes_caso(caso_id: str):
+    """Carrega os registros individuais de um caso selecionado."""
+    if not caso_id:
+        return pd.DataFrame(), "Caso não informado."
+    try:
+        with get_engine().connect() as conn:
+            df = pd.read_sql(
+                text("""
+                    SELECT
+                        id, fonte, titulo, caso_id, similaridade_caso,
+                        COALESCE(origem_agrupamento_caso, 'sem_origem') AS origem_agrupamento_caso,
+                        categoria_publica_v2, familia_categoria_v2,
+                        caso_manual, data_referencia
+                    FROM noticias
+                    WHERE caso_id = :caso_id
+                      AND COALESCE(falso_positivo, FALSE) = FALSE
+                    ORDER BY data_referencia ASC, id ASC
+                """),
+                conn,
+                params={"caso_id": caso_id},
+            )
+        return df, None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+def _formatar_colunas_auditoria_casos(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepara colunas numéricas e datas para exibição."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    for col in ["sim_min", "sim_max", "similaridade_caso", "janela_dias"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(3)
+    for col in ["primeira_data", "ultima_data", "data_referencia"]:
+        if col in out.columns:
+            out[col] = out[col].apply(formatar_data_curta)
+    return out
+
+
+def renderizar_auditoria_casos() -> None:
+    """Painel protegido para auditar agrupamento de notícias em casos."""
+    with st.expander("🧩 Auditoria dos casos e agrupamentos", expanded=True):
         st.caption(
-            "A classificação v2 é comparativa: ela não substitui automaticamente os campos principais. "
-            "Use esta auditoria para avaliar divergências antes de promover a nova classificação."
+            "Este painel usa os campos gerados pelo pipeline para verificar agrupamentos automáticos, "
+            "protótipos manuais, baixa confiança e possíveis misturas de casos."
         )
 
-        tab_comp, tab_fam = st.tabs(["Comparação registro a registro", "Distribuição por família v2"])
-        with tab_comp:
-            if df_comp.empty:
-                st.info("Nenhum registro encontrado para os critérios escolhidos.")
+        col_lim, col_info = st.columns([1, 3])
+        with col_lim:
+            limite_casos = st.selectbox(
+                "Casos agregados exibidos",
+                options=[50, 100, 200, 500],
+                index=1,
+                key="auditoria_casos_limite"
+            )
+        with col_info:
+            st.caption(
+                "Critérios de alerta: mais de uma categoria v2 no mesmo caso, janela temporal longa, "
+                "similaridade mínima baixa ou presença de origem legada/sem origem."
+            )
+
+        df_origens, df_casos, df_baixa, df_proto, df_legado, erro = carregar_auditoria_casos(int(limite_casos))
+        if erro:
+            st.info(f"Ainda não foi possível carregar a auditoria de casos: {erro}")
+            return
+
+        if df_origens.empty and df_casos.empty:
+            st.info("Ainda não há dados suficientes para auditar casos.")
+            return
+
+        df_casos_fmt = _formatar_colunas_auditoria_casos(df_casos)
+        df_baixa_fmt = _formatar_colunas_auditoria_casos(df_baixa)
+        df_proto_fmt = _formatar_colunas_auditoria_casos(df_proto)
+        df_legado_fmt = _formatar_colunas_auditoria_casos(df_legado)
+
+        total_origens = int(df_origens["n"].sum()) if not df_origens.empty and "n" in df_origens.columns else 0
+        n_casos_multi = int(len(df_casos_fmt))
+        n_baixa = int(len(df_baixa_fmt))
+        n_proto = int(len(df_proto_fmt))
+        n_legado = int(len(df_legado_fmt))
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Notícias auditadas", total_origens)
+        c2.metric("Casos com 2+ notícias", n_casos_multi)
+        c3.metric("Protótipo manual", n_proto)
+        c4.metric("Baixa confiança", n_baixa)
+        c5.metric("Origem legada/sem origem", n_legado)
+
+        if not df_casos_fmt.empty:
+            casos_suspeitos = df_casos_fmt[
+                (pd.to_numeric(df_casos_fmt.get("categorias_distintas", 0), errors="coerce").fillna(0) > 1)
+                | (pd.to_numeric(df_casos_fmt.get("janela_dias", 0), errors="coerce").fillna(0) > 5)
+                | (pd.to_numeric(df_casos_fmt.get("sim_min", 1), errors="coerce").fillna(1) < 0.55)
+                | (pd.to_numeric(df_casos_fmt.get("n_origem_legada", 0), errors="coerce").fillna(0) > 0)
+            ].copy()
+        else:
+            casos_suspeitos = pd.DataFrame()
+
+        if not casos_suspeitos.empty:
+            st.warning(f"⚠️ {len(casos_suspeitos)} casos aparecem como candidatos à revisão.")
+        elif n_baixa > 0:
+            st.warning(f"⚠️ {n_baixa} notícias foram agrupadas por protótipo manual de baixa confiança.")
+        else:
+            st.success("✅ Nenhum alerta crítico de agrupamento nos critérios atuais.")
+
+        tab_resumo, tab_baixa, tab_suspeitos, tab_proto, tab_legado, tab_detalhe = st.tabs([
+            "Resumo",
+            "Baixa confiança",
+            "Possíveis misturas",
+            "Protótipos manuais",
+            "Origem legada",
+            "Detalhar caso",
+        ])
+
+        with tab_resumo:
+            st.markdown("#### Distribuição por origem do agrupamento")
+            if df_origens.empty:
+                st.info("Sem informação de origem dos agrupamentos.")
             else:
-                st.dataframe(df_comp, use_container_width=True, hide_index=True)
-        with tab_fam:
-            if df_familias.empty:
-                st.info("Ainda não há famílias v2 preenchidas.")
+                st.dataframe(df_origens, use_container_width=True, hide_index=True)
+
+            st.markdown("#### Casos agregados")
+            if df_casos_fmt.empty:
+                st.info("Nenhum caso com duas ou mais notícias no recorte auditado.")
             else:
-                fig = px.bar(df_familias, x="n", y="familia_categoria_v2", orientation="h")
-                fig.update_layout(yaxis={"categoryorder": "total ascending"})
-                st.plotly_chart(fig, use_container_width=True, key="plot_familias_categoria_v2")
-                st.dataframe(df_familias, use_container_width=True, hide_index=True)
+                colunas = [
+                    "caso_id", "n", "categorias_distintas", "primeira_data", "ultima_data",
+                    "janela_dias", "sim_min", "sim_max", "n_proto_alta", "n_proto_baixa",
+                    "n_origem_legada", "n_manuais", "titulos"
+                ]
+                colunas = [c for c in colunas if c in df_casos_fmt.columns]
+                st.dataframe(df_casos_fmt[colunas], use_container_width=True, hide_index=True)
+
+        with tab_baixa:
+            if df_baixa_fmt.empty:
+                st.success("Nenhum agrupamento por protótipo manual de baixa confiança.")
+            else:
+                st.dataframe(df_baixa_fmt, use_container_width=True, hide_index=True)
+
+        with tab_suspeitos:
+            if casos_suspeitos.empty:
+                st.success("Nenhum caso candidato à revisão pelos critérios atuais.")
+            else:
+                colunas = [
+                    "caso_id", "n", "categorias_distintas", "primeira_data", "ultima_data",
+                    "janela_dias", "sim_min", "sim_max", "n_proto_alta", "n_proto_baixa",
+                    "n_origem_legada", "n_manuais", "titulos"
+                ]
+                colunas = [c for c in colunas if c in casos_suspeitos.columns]
+                st.dataframe(casos_suspeitos[colunas], use_container_width=True, hide_index=True)
+
+        with tab_proto:
+            if df_proto_fmt.empty:
+                st.info("Ainda não há notícias agrupadas por protótipo manual.")
+            else:
+                st.dataframe(df_proto_fmt, use_container_width=True, hide_index=True)
+
+        with tab_legado:
+            if df_legado_fmt.empty:
+                st.success("Nenhum registro com origem legada ou sem origem no recorte consultado.")
+            else:
+                st.caption("Registros com caso_id, mas sem origem explícita do agrupamento ou marcados como legado.")
+                st.dataframe(df_legado_fmt, use_container_width=True, hide_index=True)
+
+        with tab_detalhe:
+            opcoes = []
+            if not df_casos_fmt.empty and "caso_id" in df_casos_fmt.columns:
+                opcoes = df_casos_fmt["caso_id"].dropna().astype(str).tolist()
+            caso_sel = st.selectbox(
+                "Escolha um caso para ver as notícias agrupadas",
+                options=opcoes,
+                index=0 if opcoes else None,
+                key="auditoria_caso_detalhe_select"
+            ) if opcoes else None
+
+            if caso_sel:
+                df_det, erro_det = carregar_detalhes_caso(caso_sel)
+                if erro_det:
+                    st.error(f"Erro ao carregar detalhes do caso: {erro_det}")
+                elif df_det.empty:
+                    st.info("Nenhuma notícia encontrada para este caso.")
+                else:
+                    st.dataframe(_formatar_colunas_auditoria_casos(df_det), use_container_width=True, hide_index=True)
 
 
 def safe_text(value) -> str:
@@ -3216,6 +3382,7 @@ else:
                                             UPDATE noticias
                                             SET caso_id = :mestre,
                                                 caso_manual = TRUE,
+                                                origem_agrupamento_caso = 'manual_curadoria',
                                                 data_curadoria_caso = NOW(),
                                                 observacao_curadoria_caso = :observacao
                                             WHERE id = ANY(:ids)
@@ -3247,6 +3414,7 @@ else:
                                                 SET caso_id = :novo,
                                                     similaridade_caso = 1.0,
                                                     caso_manual = TRUE,
+                                                    origem_agrupamento_caso = 'manual_curadoria',
                                                     data_curadoria_caso = NOW(),
                                                     observacao_curadoria_caso = :observacao
                                                 WHERE id = :id
@@ -3275,6 +3443,8 @@ else:
                                     text("""
                                         UPDATE noticias
                                         SET caso_manual = FALSE,
+                                            origem_agrupamento_caso = NULL,
+                                            similaridade_caso = NULL,
                                             data_curadoria_caso = NOW(),
                                             observacao_curadoria_caso = :observacao
                                         WHERE id = ANY(:ids)
@@ -3311,16 +3481,16 @@ with st.expander("🔐 Domínio de auditoria operacional", expanded=False):
 
     if senha_auditoria == senha_correta_auditoria:
         st.success("Acesso liberado ao domínio de auditoria.")
-        tab_saude, tab_fontes, tab_reclass = st.tabs([
+        tab_saude, tab_fontes, tab_casos = st.tabs([
             "🩺 Saúde da coleta",
             "🗂️ Gestão das fontes",
-            "🧪 Reclassificação v2",
+            "🧩 Auditoria dos casos",
         ])
         with tab_saude:
             renderizar_saude_coleta()
         with tab_fontes:
             renderizar_gestao_fontes()
-        with tab_reclass:
-            renderizar_auditoria_reclassificacao_v2()
+        with tab_casos:
+            renderizar_auditoria_casos()
     else:
         st.info("Insira a senha de administrador para visualizar os painéis de auditoria.")
