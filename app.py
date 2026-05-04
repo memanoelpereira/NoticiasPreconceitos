@@ -1979,8 +1979,8 @@ st.markdown(css, unsafe_allow_html=True)
 col_a, col_b = st.columns([5, 1])
 with col_a:
     st.title("Agregador de notícias sobre preconceitos e discursos de ódio")
-    st.markdown("**por Marcos Emanoel Pereira & Marcus Eugênio Oliveira Lima")
-    st.markdown("***OPPES - Observatório dos Preconceitos do Estado de Sergipe")
+    st.markdown("##por Marcos Emanoel Pereira & Marcus Eugênio Oliveira Lima")
+    st.markdown("###OPPES - Observatório dos Preconceitos do Estado de Sergipe")
 with col_b:
     if st.button("Atualizar agora", key="btn_atualizar_agregador"):
         st.session_state.noticia_id_aberta = None
