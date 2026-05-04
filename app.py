@@ -49,54 +49,103 @@ def get_engine():
 
 def garantir_colunas_curadoria_casos(engine) -> None:
     """
-    Garante as colunas usadas pela curadoria manual de casos.
-    A função é idempotente: pode ser chamada várias vezes sem alterar dados existentes.
+    Checagem leve do schema usado pela curadoria.
+
+    As migrações de schema devem ser feitas pelo script externo
+    scripts_migrar_schema_supabase.py. Esta função não executa DDL
+    no Streamlit, evitando locks e latência em cada recarga da interface.
     """
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS caso_manual BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_curadoria_caso TIMESTAMPTZ"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS observacao_curadoria_caso TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS data_referencia TIMESTAMPTZ"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_data_referencia TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS versao_criterio_filtro TEXT"))
-        conn.execute(text("ALTER TABLE noticias ADD COLUMN IF NOT EXISTS origem_agrupamento_caso TEXT"))
-        conn.execute(text("""
-            UPDATE noticias
-            SET data_referencia = COALESCE(data_publicacao, data_coleta),
-                origem_data_referencia = CASE
-                    WHEN data_publicacao IS NOT NULL THEN 'publicacao'
-                    WHEN data_coleta IS NOT NULL THEN 'coleta'
-                    ELSE 'indefinida'
-                END
-            WHERE data_referencia IS NULL
-               OR origem_data_referencia IS NULL
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_noticias_data_referencia ON noticias (data_referencia DESC)"))
+    colunas_necessarias = {
+        "caso_manual", "data_curadoria_caso", "observacao_curadoria_caso",
+        "data_referencia", "origem_data_referencia", "versao_criterio_filtro",
+        "origem_agrupamento_caso", "categoria_publica_v2", "familia_categoria_v2",
+        "eixos_analiticos_v2", "enquadramentos_v2", "score_categoria_v2",
+    }
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'noticias'
+                """)
+            ).fetchall()
+        existentes = {r[0] for r in rows}
+        faltantes = sorted(colunas_necessarias - existentes)
+        if faltantes:
+            st.warning(
+                "O schema do banco parece incompleto. Rode localmente "
+                "`python scripts_migrar_schema_supabase.py`. "
+                f"Colunas ausentes: {', '.join(faltantes)}"
+            )
+    except Exception as e:
+        st.info(f"Não foi possível checar o schema da curadoria: {e}")
+
+
+COLUNAS_NOTICIAS_LEVES = [
+    "id", "titulo", "fonte", "url_fonte",
+    "data_coleta", "data_publicacao", "data_referencia", "origem_data_referencia",
+    "score_relevancia", "classificacao", "criterio_filtro",
+    "resumo",
+    "categoria_publica", "eixos_analiticos", "enquadramentos",
+    "categoria_publica_v2", "familia_categoria_v2", "eixos_analiticos_v2",
+    "enquadramentos_v2", "score_categoria_v2",
+    "tipo_fonte", "regiao_fonte",
+    "caso_id", "similaridade_caso", "origem_agrupamento_caso",
+    "caso_manual",
+]
+
+
+def _colunas_noticias_sql() -> str:
+    return ",\n                            ".join(COLUNAS_NOTICIAS_LEVES)
 
 
 def _build_noticias_query(periodo_sql: str, limite: int):
+    colunas = _colunas_noticias_sql()
     if periodo_sql == "tudo":
-        query = text("""
-                     SELECT *
+        query = text(f"""
+                     SELECT {colunas}
                      FROM noticias
-                     WHERE falso_positivo = FALSE
-                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
+                     WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                     LIMIT :limite
                      """)
         params = {"limite": int(limite)}
     else:
-        query = text("""
-                     SELECT *
+        query = text(f"""
+                     SELECT {colunas}
                      FROM noticias
                      WHERE COALESCE(data_referencia, data_publicacao, data_coleta) >= NOW() - CAST(:intervalo AS INTERVAL)
-                       AND falso_positivo = FALSE
-                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC LIMIT :limite
+                       AND COALESCE(falso_positivo, FALSE) = FALSE
+                     ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                     LIMIT :limite
                      """)
-        params = {
-            "limite": int(limite),
-            "intervalo": periodo_sql
-        }
+        params = {"limite": int(limite), "intervalo": periodo_sql}
 
     return query, params
+
+
+@st.cache_data(ttl=120)
+def carregar_detalhe_noticia(noticia_id: int):
+    """Busca texto completo e evidências apenas sob demanda."""
+    try:
+        with get_engine().connect() as conn:
+            df = pd.read_sql(
+                text("""
+                    SELECT id, resumo, texto_completo, evidencias_classificacao_v2
+                    FROM noticias
+                    WHERE id = :id
+                    LIMIT 1
+                """),
+                conn,
+                params={"id": int(noticia_id)},
+            )
+        if df.empty:
+            return {}, None
+        return df.iloc[0].to_dict(), None
+    except Exception as e:
+        return {}, str(e)
 
 
 @st.cache_data(ttl=60)
@@ -144,7 +193,11 @@ def carregar_saude_pipeline():
         with get_engine().connect() as conn:
             df_exec = pd.read_sql(
                 text("""
-                    SELECT *
+                    SELECT id, inicio, fim, status, duracao_seg,
+                           portais_total, portais_ok, portais_erro,
+                           extraidos, filtrados, alta_relevancia, relevancia_contextual, caso_sensivel,
+                           inseridos, duplicados, erros_db, backfill_atualizados,
+                           reagrupamento_inicio_atualizados, reagrupamento_final_atualizados, observacao
                     FROM pipeline_execucoes
                     ORDER BY inicio DESC
                     LIMIT 1
@@ -3483,32 +3536,73 @@ else:
     with st.expander("🛠️ Curadoria de Falsos Positivos (Admin)", expanded=False):
         st.markdown("Área restrita. Insira a senha de administrador para gerir os falsos positivos.")
 
-        senha_digitada = st.text_input("Senha de Acesso", type="password", key="admin_password_input")
+        senha_digitada = st.text_input(
+            "Senha de Acesso",
+            type="password",
+            key="admin_password_input",
+            autocomplete="off",
+        )
         senha_correta = st.secrets.get("ADMIN_PASSWORD", "senha_provisoria")
 
         if senha_digitada == senha_correta:
             engine = get_engine()
 
-            # Busca exclusiva para curadoria
-            termo_curadoria = st.text_input("🔍 Buscar notícia específica para curadoria:", key="busca_admin_cur")
+            if "termo_curadoria_aplicado" not in st.session_state:
+                st.session_state["termo_curadoria_aplicado"] = ""
+            if "limite_curadoria_aplicado" not in st.session_state:
+                st.session_state["limite_curadoria_aplicado"] = 100
+
+            with st.form("form_busca_curadoria_fp", clear_on_submit=False):
+                col_busca_cur, col_lim_cur, col_btn_cur = st.columns([3, 1, 1])
+                with col_busca_cur:
+                    termo_digitado = st.text_input(
+                        "🔍 Buscar notícia específica para curadoria:",
+                        value=st.session_state.get("termo_curadoria_aplicado", ""),
+                        key="busca_admin_cur_form",
+                        autocomplete="off",
+                        placeholder="Digite parte do título ou da fonte e clique em Buscar",
+                    )
+                with col_lim_cur:
+                    limite_digitado = st.selectbox(
+                        "Limite",
+                        options=[25, 50, 100, 200, 500],
+                        index=[25, 50, 100, 200, 500].index(
+                            int(st.session_state.get("limite_curadoria_aplicado", 100))
+                            if int(st.session_state.get("limite_curadoria_aplicado", 100)) in [25, 50, 100, 200, 500]
+                            else 100
+                        ),
+                        key="limite_admin_cur_form",
+                    )
+                with col_btn_cur:
+                    st.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
+                    buscar_curadoria = st.form_submit_button("Buscar")
+
+            if buscar_curadoria:
+                st.session_state["termo_curadoria_aplicado"] = termo_digitado.strip()
+                st.session_state["limite_curadoria_aplicado"] = int(limite_digitado)
+
+            termo_curadoria = st.session_state.get("termo_curadoria_aplicado", "").strip()
+            limite_curadoria = int(st.session_state.get("limite_curadoria_aplicado", 100))
 
             if termo_curadoria:
                 query_curadoria = text("""
-                    SELECT id, data_coleta, fonte, titulo, falso_positivo
+                    SELECT id, data_coleta, fonte, titulo, FALSE AS falso_positivo
                     FROM noticias
-                    WHERE falso_positivo = FALSE
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
                       AND (titulo ILIKE :termo OR fonte ILIKE :termo)
-                    ORDER BY data_coleta DESC LIMIT 100
+                    ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                    LIMIT :limite
                 """)
-                params_curadoria = {"termo": f"%{termo_curadoria}%"}
+                params_curadoria = {"termo": f"%{termo_curadoria}%", "limite": limite_curadoria}
             else:
                 query_curadoria = text("""
-                    SELECT id, data_coleta, fonte, titulo, falso_positivo
+                    SELECT id, data_coleta, fonte, titulo, FALSE AS falso_positivo
                     FROM noticias
-                    WHERE falso_positivo = FALSE
-                    ORDER BY data_coleta DESC LIMIT 100
+                    WHERE COALESCE(falso_positivo, FALSE) = FALSE
+                    ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                    LIMIT :limite
                 """)
-                params_curadoria = {}
+                params_curadoria = {"limite": limite_curadoria}
 
             try:
                 with engine.connect() as conn:
@@ -3518,33 +3612,43 @@ else:
                 st.stop()
 
             if not df_para_curar.empty:
-                df_editado = st.data_editor(
-                    df_para_curar,
-                    column_config={
-                        "falso_positivo": st.column_config.CheckboxColumn("É Falso Positivo? 🗑️", default=False),
-                        "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
-                        "fonte": "Fonte da Notícia",
-                        "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY")
-                    },
-                    disabled=["id", "data_coleta", "fonte", "titulo"],
-                    hide_index=True,
-                    use_container_width=True,
-                    key="editor_curadoria"
+                st.caption(
+                    f"{len(df_para_curar)} notícias carregadas para curadoria. "
+                    "Marque os falsos positivos e clique em Salvar; os cliques nas caixas não recarregam a tela."
                 )
+                with st.form("form_editor_curadoria_fp", clear_on_submit=False):
+                    df_editado = st.data_editor(
+                        df_para_curar,
+                        column_config={
+                            "falso_positivo": st.column_config.CheckboxColumn("É Falso Positivo? 🗑️", default=False),
+                            "titulo": st.column_config.TextColumn("Título da Notícia", width="large"),
+                            "fonte": "Fonte da Notícia",
+                            "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY"),
+                        },
+                        disabled=["id", "data_coleta", "fonte", "titulo"],
+                        hide_index=True,
+                        use_container_width=True,
+                        key=f"editor_curadoria_{termo_curadoria}_{limite_curadoria}",
+                    )
+                    salvar_curadoria = st.form_submit_button("Salvar Curadoria", type="primary")
 
-                if st.button("Salvar Curadoria", type="primary"):
+                if salvar_curadoria:
                     modificados = df_editado[df_editado["falso_positivo"] == True]
                     if not modificados.empty:
                         ids_puros = [int(x) for x in modificados["id"].tolist()]
                         try:
                             with engine.begin() as conn:
                                 conn.execute(
-                                    text("UPDATE noticias SET falso_positivo = TRUE WHERE id = ANY (:ids)"),
-                                    {"ids": ids_puros})
+                                    text("UPDATE noticias SET falso_positivo = TRUE WHERE id = ANY(:ids)"),
+                                    {"ids": ids_puros},
+                                )
                             st.success(f"{len(ids_puros)} notícias removidas!")
+                            st.cache_data.clear()
                             st.rerun()
                         except Exception as e:
                             st.error(f"Erro ao atualizar: {e}")
+                    else:
+                        st.info("Nenhuma notícia foi marcada como falso positivo.")
             else:
                 st.info("Nenhuma notícia encontrada para curadoria.")
 
@@ -3558,23 +3662,53 @@ else:
 
             if "chave_gestao" not in st.session_state:
                 st.session_state["chave_gestao"] = 0
+            if "termo_gestao_aplicado" not in st.session_state:
+                st.session_state["termo_gestao_aplicado"] = ""
+            if "limite_gestao_aplicado" not in st.session_state:
+                st.session_state["limite_gestao_aplicado"] = 200
+            if "ids_gestao_selecionados" not in st.session_state:
+                st.session_state["ids_gestao_selecionados"] = []
 
-            # Filtros de busca e limite
-            col_busca, col_limite = st.columns([3, 1])
-            with col_busca:
-                termo_gestao = st.text_input("🔍 Filtrar casos por palavra-chave:", key="busca_admin_gest")
-            with col_limite:
-                limite_busca = st.selectbox("Limite de busca:", options=[50, 200, 500, 1000, 2000], index=1)
+            with st.form("form_busca_gestao_casos", clear_on_submit=False):
+                col_busca, col_limite, col_btn = st.columns([3, 1, 1])
+                with col_busca:
+                    termo_gestao_digitado = st.text_input(
+                        "🔍 Filtrar casos por palavra-chave:",
+                        value=st.session_state.get("termo_gestao_aplicado", ""),
+                        key="busca_admin_gest_form",
+                        autocomplete="off",
+                        placeholder="Digite parte do título, fonte ou caso_id e clique em Buscar",
+                    )
+                with col_limite:
+                    opcoes_limite = [50, 100, 200, 500, 1000]
+                    limite_atual = int(st.session_state.get("limite_gestao_aplicado", 200))
+                    limite_busca_digitado = st.selectbox(
+                        "Limite",
+                        options=opcoes_limite,
+                        index=opcoes_limite.index(limite_atual) if limite_atual in opcoes_limite else 2,
+                        key="limite_admin_gest_form",
+                    )
+                with col_btn:
+                    st.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
+                    buscar_gestao = st.form_submit_button("Buscar")
 
-            # Define a query baseada no filtro
+            if buscar_gestao:
+                st.session_state["termo_gestao_aplicado"] = termo_gestao_digitado.strip()
+                st.session_state["limite_gestao_aplicado"] = int(limite_busca_digitado)
+                st.session_state["ids_gestao_selecionados"] = []
+
+            termo_gestao = st.session_state.get("termo_gestao_aplicado", "").strip()
+            limite_busca = int(st.session_state.get("limite_gestao_aplicado", 200))
+
             if termo_gestao:
                 query_casos = text("""
                     SELECT id, data_coleta, fonte, titulo, caso_id,
                            COALESCE(caso_manual, FALSE) AS caso_manual
                     FROM noticias
                     WHERE COALESCE(falso_positivo, FALSE) = FALSE
-                      AND (titulo ILIKE :termo OR fonte ILIKE :termo)
-                    ORDER BY data_coleta DESC LIMIT :limite
+                      AND (titulo ILIKE :termo OR fonte ILIKE :termo OR caso_id ILIKE :termo)
+                    ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                    LIMIT :limite
                 """)
                 params_gestao = {"limite": limite_busca, "termo": f"%{termo_gestao}%"}
             else:
@@ -3583,7 +3717,8 @@ else:
                            COALESCE(caso_manual, FALSE) AS caso_manual
                     FROM noticias
                     WHERE COALESCE(falso_positivo, FALSE) = FALSE
-                    ORDER BY data_coleta DESC LIMIT :limite
+                    ORDER BY COALESCE(data_referencia, data_publicacao, data_coleta) DESC
+                    LIMIT :limite
                 """)
                 params_gestao = {"limite": limite_busca}
 
@@ -3595,28 +3730,45 @@ else:
                 st.stop()
 
             if not df_casos.empty:
-                event = st.dataframe(
-                    df_casos,
-                    column_config={
-                        "id": None,
-                        "caso_id": "ID do Caso",
-                        "caso_manual": st.column_config.CheckboxColumn("Manual?", disabled=True),
-                        "titulo": st.column_config.TextColumn("Título", width="large"),
-                        "fonte": "Fonte"
-                    },
-                    on_select="rerun",
-                    selection_mode="multi-row",
-                    hide_index=True,
-                    use_container_width=True,
-                    key=f"tabela_gestao_{st.session_state['chave_gestao']}"
+                df_casos_editor = df_casos.copy()
+                ids_salvos = set(int(x) for x in st.session_state.get("ids_gestao_selecionados", []))
+                df_casos_editor.insert(0, "selecionar", df_casos_editor["id"].astype(int).isin(ids_salvos))
+
+                st.caption(
+                    f"{len(df_casos_editor)} registros carregados. Marque as linhas e clique em Atualizar seleção. "
+                    "A tabela não usa seleção por clique, evitando recargas lentas a cada item."
                 )
+                with st.form(f"form_tabela_gestao_{st.session_state['chave_gestao']}", clear_on_submit=False):
+                    df_edit_gestao = st.data_editor(
+                        df_casos_editor,
+                        column_config={
+                            "selecionar": st.column_config.CheckboxColumn("Selecionar", default=False),
+                            "id": None,
+                            "caso_id": st.column_config.TextColumn("ID do Caso", width="medium"),
+                            "caso_manual": st.column_config.CheckboxColumn("Manual?", disabled=True),
+                            "titulo": st.column_config.TextColumn("Título", width="large"),
+                            "fonte": "Fonte",
+                            "data_coleta": st.column_config.DatetimeColumn("Data", format="DD/MM/YYYY"),
+                        },
+                        disabled=["id", "data_coleta", "fonte", "titulo", "caso_id", "caso_manual"],
+                        hide_index=True,
+                        use_container_width=True,
+                        key=f"editor_gestao_{st.session_state['chave_gestao']}_{termo_gestao}_{limite_busca}",
+                    )
+                    atualizar_sel = st.form_submit_button("Atualizar seleção")
 
-                indices_selecionados = event.selection.rows
-                if indices_selecionados:
-                    selecionados = df_casos.iloc[indices_selecionados]
-                    ids_puros = [int(x) for x in selecionados["id"].tolist()]
+                if atualizar_sel:
+                    selecionados_tmp = df_edit_gestao[df_edit_gestao["selecionar"] == True]
+                    st.session_state["ids_gestao_selecionados"] = [int(x) for x in selecionados_tmp["id"].tolist()]
+
+                ids_puros = [int(x) for x in st.session_state.get("ids_gestao_selecionados", [])]
+                selecionados = df_casos[df_casos["id"].astype(int).isin(ids_puros)].copy()
+
+                if not selecionados.empty:
+                    st.success(f"{len(selecionados)} notícia(s) selecionada(s).")
                     casos_unicos = selecionados["caso_id"].dropna().astype(str).unique().tolist()
-
+                    if not casos_unicos:
+                        casos_unicos = [f"caso_manual_{ids_puros[0]}"]
                     col1, col2 = st.columns(2)
                     with col1:
                         st.markdown("#### 🔗 Unificar Casos")
@@ -3690,8 +3842,9 @@ else:
                                     text("""
                                         UPDATE noticias
                                         SET caso_manual = FALSE,
-                                            origem_agrupamento_caso = NULL,
+                                            caso_id = NULL,
                                             similaridade_caso = NULL,
+                                            origem_agrupamento_caso = NULL,
                                             data_curadoria_caso = NOW(),
                                             observacao_curadoria_caso = :observacao
                                         WHERE id = ANY(:ids)
