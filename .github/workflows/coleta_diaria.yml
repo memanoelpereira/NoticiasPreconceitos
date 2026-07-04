@@ -1,17 +1,30 @@
 name: Coleta de Notícias Automática
 
 on:
-  # Permite que você clique num botão no GitHub para rodar manualmente se quiser
-  workflow_dispatch: 
-  
-  # Agenda a execução automática (Cron Job)
+  # Permite rodar manualmente pelo GitHub Actions
+  workflow_dispatch:
+
+  # Agenda a execução automática. Horários em UTC.
+  # 0 */6 * * * = 00:00, 06:00, 12:00 e 18:00 UTC
   schedule:
-    # Este exemplo roda a cada 6 horas (00:00, 06:00, 12:00, 18:00 UTC)
-    - cron: '0 */6 * * *'
+    - cron: "0 */6 * * *"
+
+# Força actions JavaScript ainda baseadas em Node 20 a rodarem em Node 24.
+# Isso elimina/antecipa a migração indicada pelo aviso do GitHub Actions.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coleta-noticias-automatica
+  cancel-in-progress: false
 
 jobs:
   executar-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Clonar o repositório
@@ -20,22 +33,21 @@ jobs:
       - name: Configurar o Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Ou a versão que você costuma usar
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
 
-      - name: Instalar dependências (Bibliotecas Python)
+      - name: Instalar dependências Python
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
-      - name: Instalar o motor de inteligência (SpaCy)
+
+      - name: Instalar modelo spaCy
         run: python -m spacy download pt_core_news_lg
 
-      - name: Instalar navegadores para o Scraper (Playwright)
+      - name: Instalar Chromium do Playwright
         run: playwright install chromium
 
-      - name: Rodar o Pipeline de Coleta
+      - name: Rodar pipeline de coleta
         env:
-          # Aqui o GitHub injeta a sua senha de forma secreta e segura
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python pipeline_pesquisa.py
